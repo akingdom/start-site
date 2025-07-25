@@ -6,7 +6,7 @@ Serves a local folder as a website. Useful for when you need a web server for qu
 (Install Python 3)[https://www.python.org/downloads/]
 
 Run the script.
-`python3 start_site.py`
+`python3 start_site_server.py`
 
 ## Settings
 
