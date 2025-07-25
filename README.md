@@ -3,14 +3,17 @@ Serves a local folder as a website. Useful for when you need a web server for qu
 
 ## Prerequisites
 
-- (Install Python 3.8+)[https://www.python.org/downloads/]
+- [Install Python 3.8+](https://www.python.org/downloads/)
 - `pip install --upgrade pip`
 
 ## Installation
 
 1. Clone:
 
-`git clone https://github.com/akingdom/start-site.git cd start-site`
+```python
+git clone https://github.com/akingdom/start-site.git
+cd start-site
+```
 
 ## Usage
 
