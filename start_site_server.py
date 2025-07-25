@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-# start_site.py
-VERSION = "1.0.4"
-# Serves a local folder as a website.
+# start_site_server.py
+"""
+Serves a local folder as a website.
+To keep this file generic, all extensions such as /api/<name> should be handled in a file named, site_endpoints.py. The server works fine without that file.
+"""
+VERSION = "1.0.6" 
+# 
 #
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 #
 # SETTINGS ==========================================
 # PORT = TCP Port ()
-PORT = 8000
+PORT = 8001
 # SITE_FOLDER = Name of the folder that contains the web-site files. This site folder must be in the same 'parent' folder that contains this start_site.py script.
 SITE_FOLDER = "live"
 # DEFAULT_FILE = Name of the preferred file to open when a web client doens't specify a filename.
@@ -42,11 +46,26 @@ except ImportError:
 
 app = FastAPI()
 
+try:
+    if os.path.exists("site_endpoints.py"):
+        import site_endpoints
+        site_endpoints.init(app)          # ← single clean call
+        print("site_endpoints are active")
+    else:
+        print("site_endpoints unused (not found)")
+except ImportError as e:
+    print(f"site_endpoints unused (import error): {e}")
+except Exception as e:
+    print(f"site_endpoints unused (other error): {e}")
+
+# 1.0.5 - now correctly handles subfolders
 def secure_filepath(filepath):
     """Checks if a filepath is within the SITE_FOLDER."""
-    normalized_site_path = os.path.normpath(SITE_FOLDER)
-    normalized_filepath = os.path.normpath(filepath)
+    normalized_site_path = os.path.abspath(os.path.normpath(SITE_FOLDER))
+    normalized_filepath  = os.path.abspath(os.path.normpath(filepath))
     if not normalized_filepath.startswith(normalized_site_path):
+        print(normalized_site_path)
+        print(normalized_filepath)
         raise HTTPException(status_code=403, detail="Forbidden")
     return normalized_filepath
 
@@ -142,6 +161,13 @@ def get_lan_ip():
 
 if __name__ == "__main__":
     ip = get_lan_ip()
-    print(f"serving web files\n from '{SITE_FOLDER}' directory\n connect to 'http://{ip}:{PORT}'")
+    print(f"serving web files\n from '{SITE_FOLDER}' directory\n connect to 'http://{ip}:{PORT}'\n (ver {VERSION})")
+    print("=== FastAPI routes ===")
+    for route in app.routes:
+        if hasattr(route, "endpoint"):
+            print(f"{route.path:<20} → {route.endpoint.__name__}")
+        elif hasattr(route, "app"):  # e.g., for StaticFiles mount
+            print(f"{route.path:<20} ↪ mounted app: {type(route.app).__name__}")
+        else:
+            print(f"{route.path:<20} ↪ [unknown route type]")
     uvicorn.run(app, host="0.0.0.0", port=PORT, lifespan="off") #important lifespan = off usage
-
