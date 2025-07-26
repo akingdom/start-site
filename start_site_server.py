@@ -7,7 +7,7 @@ Extensions such as /api/<name> are handled by site_endpoints.py (if present).
 Master functionality for managing and launching other local server instances (and client registration)
 is handled by site_manager.py (if present).
 """
-VERSION = "1.0.10"
+VERSION = "1.0.11"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 
@@ -199,6 +199,8 @@ class ServerCore:
             
         return True, ""
 
+    load_endpoint_modules = _ensure_dependencies  # convenience alias
+    
     def ensure_server_core_dependencies(self) -> Tuple[bool, str]:
         """Checks and loads core server dependencies."""
         _REQUIRED_MODULES = {
