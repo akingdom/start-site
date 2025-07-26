@@ -201,6 +201,15 @@ class ServerCore:
 
     load_endpoint_modules = _ensure_dependencies  # convenience alias
     
+    def get_module(self, name: str):
+        """Convenience Module Getter for endpoints.
+           e.g. numpy_mod = svr_core.get_module("numpy")
+        """
+        try:
+            return self._imported_modules_cache[name]
+        except KeyError:
+            raise RuntimeError(f"Module {name!r} not loaded")
+
     def ensure_server_core_dependencies(self) -> Tuple[bool, str]:
         """Checks and loads core server dependencies."""
         _REQUIRED_MODULES = {

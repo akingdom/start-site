@@ -14,8 +14,8 @@ def init(app, svr_core):
     # Load numpy before defining the endpoint
     svr_core.load_endpoint_modules(REQUIRED_ENDPOINT_MODULES)
 
-    JSONResponse = svr_core.fastapi_module.responses.JSONResponse
-    numpy_mod   = svr_core.numpy_module
+    JSONResponse = svr_core.get_module("fastapi").responses.JSONResponse
+    numpy_mod   = svr_core.get_module("numpy")
 
     @app.get("/api/add")
     async def add(a: float, b: float):
