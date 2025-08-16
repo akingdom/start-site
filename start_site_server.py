@@ -747,13 +747,14 @@ if __name__ == "__main__":
         else:
              logging.info("Site manager found. This instance is acting as the master server.")
         
+    #TODO - check if we still need this stub
     # Check if the HTTP redirect is still needed based on potentially updated SECURE_SITE
     # If hub logic changed SECURE_SITE to False, the redirect server should not run
-    if not svr_core.config.SECURE_SITE and redirect_app in [c.app for c in server_configs if hasattr(c, 'app')]:
-        # This part is tricky. If svr_core.config.SECURE_SITE changed during hub logic,
-        # the run_servers function needs to be re-evaluated or adjusted.
-        # For simplicity, we'll let run_servers handle it based on the final svr_core.config.SECURE_SITE.
-        pass 
+    #if not svr_core.config.SECURE_SITE and redirect_app in [c.app for c in server_configs if hasattr(c, 'app')]:
+    #    # This part is tricky. If svr_core.config.SECURE_SITE changed during hub logic,
+    #    # the run_servers function needs to be re-evaluated or adjusted.
+    #    # For simplicity, we'll let run_servers handle it based on the final svr_core.config.SECURE_SITE.
+    #    pass 
 
     # If hub logic modified ports/secure status, reflect that in run_servers arguments
     # No, run_servers directly accesses svr_core.config, so changes made to svr_core.config.HTTP_PORT
