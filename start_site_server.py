@@ -46,6 +46,12 @@ import logging # Added for consistent logging
 import re
 from typing import Dict, Tuple, Any, Optional, Callable # Added for type hinting
 
+# Get the directory where the script is located
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Change the current working directory to the script's directory
+os.chdir(script_dir)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
