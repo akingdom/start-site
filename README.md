@@ -20,6 +20,10 @@ cd start-site
 Run the script.
 `python3 start_site_server.py`
 
+### Important
+
+HTTPS service may require *restarting the web browser* if a security warning is present after this script tries to create and install a local certificate.
+
 ## Settings
 
 There are several settings you can customise in the `start_site_server.py` file.
