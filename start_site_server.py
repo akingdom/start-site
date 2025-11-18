@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 # start_site_server.py
+# -*- coding: utf-8 -*-
 """
 Serves a local folder as a website.
+
+IMPORTANT: HTTPS service may require restarting the web browser if a security warning is present after this script tries to create and install a local certificate.
+
 This file consolidates all core server logic, including dependency management.
 Extensions such as /api/<name> are handled by site_endpoints.py (if present).
 Master functionality for managing and launching other local server instances (and client registration)
 is handled by site_manager.py (if present).
+- Optional HTTPS (SECURE_SITE) with inline Local CA + signed localhost leaf
+- Optional HTTP->HTTPS redirect on separate port
+- Minimal cryptography dependency handles
 """
-VERSION = "1.0.11"
+VERSION = "1.0.14"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
+# Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
 
 # --- EDITABLE SERVER CONFIGURATION ---
 class ServerConfig:
@@ -27,6 +35,11 @@ class ServerConfig:
         # Set to True to force regeneration of SSL certificates on startup, even if valid.
         # Set to False (default) to only regenerate if missing or expired.
         self.FORCE_CERTIFICATE_REGENERATION: bool = False
+        # Set to True to auto-open the default page in a web browser on server startup
+        # Set to False (default) if a web page or app will be opened independent of this script
+        self.AUTO_OPEN_DEFAULT: bool = True
+        # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
+        self.AUTO_OPEN_DELAY_SECONDS: int = 1
         # A fixed, well-known base port for the master server across all instances (used by site_manager.py). Generally this should never change.
         self.BASE_PORT: int = 8001
         # Application version number. Note: Leave this as-is, as it reflects the version above.
@@ -36,15 +49,24 @@ class ServerConfig:
 
 
 import os
-import socket
+import socket #obsolete?
 import sys
 import importlib
 import asyncio
+import webbrowser
+import ipaddress
 from datetime import datetime, timedelta, timezone
 import subprocess
+from pathlib import Path
 import logging # Added for consistent logging
 import re
 from typing import Dict, Tuple, Any, Optional, Callable # Added for type hinting
+
+# --- cryptography imports (modern style) ---
+from cryptography import x509
+from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 # Get the directory where the script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -92,14 +114,6 @@ class ServerCore:
         self.RedirectResponse: Optional[Callable] = None
         self.StaticFiles: Optional[Callable] = None
         self.APIRouter: Optional[Callable] = None # ADDED: For site_manager to use APIRouter from FastAPI
-
-        # Cryptography components are now directly referenced from the main 'cryptography' import
-        self.cryptography_x509: Optional[Any] = None
-        self.cryptography_NameOID: Optional[Any] = None
-        self.cryptography_hashes: Optional[Any] = None
-        self.cryptography_serialization: Optional[Any] = None
-        self.cryptography_rsa: Optional[Any] = None
-        self.cryptography_default_backend: Optional[Any] = None
 
     def _ensure_dependencies(self, required_modules: Dict[str, Tuple[str, bool]]) -> Tuple[bool, str]:
         """
@@ -482,148 +496,241 @@ def get_lan_ip():
 if svr_core.config.SECURE_SITE:
     def generate_self_signed_cert(cert_path="cert.pem", key_path="key.pem", force_regenerate: bool = False):
         """
-        Generates a self-signed SSL certificate and private key.
-        Only generates if:
-        1. `force_regenerate` is True.
-        2. The files don't already exist.
-        3. The existing cert is expired.
-        Then attempts to add it to the system trust store *only once per session*.
-        Returns the path to the certificate and key.
+        Generate a *CA-signed* localhost certificate (drop-in replacement).
+        - Ensures a local root CA exists under ~/.localdev/ca/
+        - Attempts to install the CA into system trust (best-effort, once per session)
+        - Issues a leaf certificate signed by the CA with correct EKU/KU and SANs
+        - Regenerates leaf if missing, near expiry, or force_regenerate True
+
+        Returns (cert_path_str, key_path_str)
         """
-        global _CERT_TRUST_CHECK_DONE_THIS_SESSION # Declare global to modify it
+        global _CERT_TRUST_CHECK_DONE_THIS_SESSION
 
-        # Access cryptography components via svr_core's direct attributes
-        _x509 = svr_core.cryptography_x509
-        _NameOID = svr_core.cryptography_NameOID
-        _hashes = svr_core.cryptography_hashes
-        _serialization = svr_core.cryptography_serialization
-        _rsa = svr_core.cryptography_rsa
-        _default_backend = svr_core.cryptography_default_backend
+        cert_path = str(cert_path)
+        key_path = str(key_path)
 
-        # Check if cryptography components are actually loaded
-        if not all([_x509, _NameOID, _hashes, _serialization, _rsa, _default_backend]):
-            logging.error("Cryptography components failed to load. Cannot generate SSL certificate.")
-            sys.exit(1) # Exit cleanly as SSL will fail.
+        # --- CA storage paths ---
+        ca_base = Path.home() / ".localdev" / "ca"
+        ca_key_path = ca_base / "ca.key.pem"
+        ca_cert_path = ca_base / "ca.cert.pem"
+        ca_base.mkdir(parents=True, exist_ok=True)
 
-        cert_exists = os.path.exists(cert_path) and os.path.exists(key_path)
-        cert_expired = True # Assume expired until proven otherwise
-
-        if cert_exists:
+        def _write_pem(path: Path, data: bytes, mode: int = 0o600):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
             try:
-                with open(cert_path, "rb") as f:
-                    cert_data = f.read()
-                cert = _x509.load_pem_x509_certificate(cert_data, _default_backend())
-                
-                # Check expiration date
-                if datetime.now(timezone.utc) < cert.not_valid_after_utc:
-                    cert_expired = False
-                    logging.info(f"🔐 Existing SSL certificate found and is valid until {cert.not_valid_after_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}.")  # Added time for precision
-                    # If cert is valid, we assume it's already trusted or user will handle it.
-                    # Set the flag so we don't prompt for trust installation again this session.
-                    _CERT_TRUST_CHECK_DONE_THIS_SESSION = True
-                else:
-                    logging.warning(f"⚠️ Existing SSL certificate expired on {cert.not_valid_after_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}. Generating a new one.")
-            except Exception as e:
-                logging.warning(f"⚠️ Could not load or parse existing certificate ({e}). Generating a new one.")
-                cert_expired = True # Force regeneration if load fails
+                os.chmod(path, mode)
+            except Exception:
+                pass
 
-        # --- Decide whether to generate ---
-        should_generate = force_regenerate or not cert_exists or cert_expired
-
-        if should_generate:
-            if force_regenerate:
-                logging.info("♻️ Force regenerating SSL certificate and key as requested...")
-            else:
-                logging.info("Generating new self-signed SSL certificate and key (missing or expired)...")
-            
-            # Generate a new private key
-            key = _rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=2048,
-                backend=_default_backend()
-            )
-
-            # Generate a self-signed certificate
-            subject = issuer = _x509.Name([
-                _x509.NameAttribute(_NameOID.COUNTRY_NAME, "AU"),
-                _x509.NameAttribute(_NameOID.STATE_OR_PROVINCE_NAME, "Victoria"),
-                _x509.NameAttribute(_NameOID.LOCALITY_NAME, "Melbourne"),
-                _x509.NameAttribute(_NameOID.ORGANIZATION_NAME, "Local Development"),
-                _x509.NameAttribute(_NameOID.COMMON_NAME, "localhost"), # Important for local dev
+        # Create CA if missing (persistent, long-lived)
+        def _create_ca_if_missing(force: bool = False):
+            if ca_key_path.exists() and ca_cert_path.exists() and not force:
+                logging.debug("LocalCA: existing CA found")
+                return
+            logging.info("LocalCA: Generating root CA...")
+            ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "Local Dev CA"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Local Development"),
             ])
-            cert = (
-                _x509.CertificateBuilder()
+            now = datetime.utcnow()
+            ca_cert = (
+                x509.CertificateBuilder()
                 .subject_name(subject)
                 .issuer_name(issuer)
-                .public_key(key.public_key())
-                .serial_number(_x509.random_serial_number())
-                .not_valid_before(datetime.utcnow())
-                .not_valid_after(datetime.utcnow() + timedelta(days=365)) # Valid for 1 year
-                .add_extension(_x509.SubjectAlternativeName([_x509.DNSName("localhost")]), critical=False)
-                .add_extension(_x509.BasicConstraints(ca=True, path_length=None), critical=True)
-                .sign(key, _hashes.SHA256(), _default_backend())
+                .public_key(ca_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(days=1))
+                .not_valid_after(now + timedelta(days=3650))
+                .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                .add_extension(
+                    x509.KeyUsage(
+                        digital_signature=False,
+                        key_encipherment=False,
+                        content_commitment=False,
+                        data_encipherment=False,
+                        key_agreement=False,
+                        key_cert_sign=True,
+                        crl_sign=True,
+                        encipher_only=False,
+                        decipher_only=False,
+                    ),
+                    critical=True
+                )
+                # Add a subject key identifier for CA
+                .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+                .sign(ca_key, hashes.SHA256())
             )
 
-            # Write our key and certificate to disk
-            with open(key_path, "wb") as f:
-                f.write(key.private_bytes(
-                    encoding=_serialization.Encoding.PEM,
-                    format=_serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=_serialization.NoEncryption()
-                ))
-            with open(cert_path, "wb") as f:
-                f.write(cert.public_bytes(_serialization.Encoding.PEM))
+            _write_pem(ca_key_path, ca_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+            _write_pem(ca_cert_path, ca_cert.public_bytes(serialization.Encoding.PEM))
+            logging.info("LocalCA: Root CA created at %s", ca_cert_path)
 
-            logging.info(f"✅ Generated SSL certificate and key: {cert_path}, {key_path}")
-            # If a new cert was generated, we should definitely attempt to trust it
-            _CERT_TRUST_CHECK_DONE_THIS_SESSION = False # Reset flag to ensure trust attempt
-        else:
-            # If no generation was needed, just use the existing files.
-            # This path is taken if force_regenerate is False, cert_exists is True, and cert_expired is False.
-            pass # Logging for valid cert already handled above.
-
-        # --- Attempt to add to system trust store ONLY IF not done this session ---
-        # This part runs regardless of whether a new cert was generated, but only once per session.
-        # It's here because even if an old valid cert exists, the user might want to re-attempt trust.
-        if not _CERT_TRUST_CHECK_DONE_THIS_SESSION:
-            logging.info("\nAttempting to add certificate to system trust store. This is a SSL certificate to allow local web pages to talk to the server via HTTPS (which is needed for certain web page functions such as Cut/Paste/Copy access)...")
+        # Try installing CA to system trust (best-effort)
+        def _install_ca_system_trust_once():
+            if not ca_cert_path.exists():
+                logging.error("LocalCA: CA cert not present for install attempt.")
+                return False
             try:
-                if sys.platform == "darwin": # macOS
-                    subprocess.run(
-                        ["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", cert_path],
-                        check=True,
-                        capture_output=True,
-                        text=True
-                    )
-                    logging.info("🎉 macOS: Certificate successfully added to System Keychain (may require 'Always Trust' manual setting in Keychain Access).")
-                elif sys.platform == "win32": # Windows
-                    subprocess.run(
-                        ["certutil", "-addstore", "Root", cert_path],
-                        check=True,
-                        capture_output=True,
-                        text=True
-                    )
-                    logging.info("🎉 Windows: Certificate successfully added to Trusted Root Certification Authorities store (may require UAC confirmation).")
+                if sys.platform == "darwin":
+                    cmd = ["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
+                           "-k", "/Library/Keychains/System.keychain", str(ca_cert_path)]
+                    logging.info("LocalCA: Installing CA into macOS System keychain (may prompt for sudo)...")
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    return True
+                elif sys.platform == "win32":
+                    cmd = ["certutil", "-addstore", "Root", str(ca_cert_path)]
+                    logging.info("LocalCA: Installing CA into Windows Root store (requires admin)...")
+                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    return True
                 else:
-                    logging.info("ℹ️ Automatic certificate trust not supported on this OS. Please trust it manually.")
-
+                    dest = Path("/usr/local/share/ca-certificates") / (ca_cert_path.stem + ".crt")
+                    logging.info("LocalCA: Installing CA into Linux trust store (may prompt for sudo)...")
+                    subprocess.run(["sudo", "cp", str(ca_cert_path), str(dest)], check=True)
+                    subprocess.run(["sudo", "update-ca-certificates"], check=True)
+                    logging.info("LocalCA: update-ca-certificates completed.")
+                    return True
             except subprocess.CalledProcessError as e:
-                logging.error(f"❌ Failed to add certificate to system trust store:")
-                logging.error(f"   Command: {' '.join(e.cmd)}")
-                logging.error(f"   Return Code: {e.returncode}")
-                if e.stdout: logging.error(f"   Stdout: {e.stdout.strip()}")
-                if e.stderr: logging.error(f"   Stderr: {e.stderr.strip()}")
-                logging.error("   Please add the certificate to your system's trust store manually.")
-                logging.error("   See previous messages for manual instructions for macOS/Windows.")
+                logging.error("LocalCA: system trust install failed: %s", getattr(e, "stderr", str(e)))
+                return False
             except FileNotFoundError as e:
-                logging.error(f"❌ Command not found: {e.strerror}. Ensure 'sudo'/'security' (macOS) or 'certutil' (Windows) are in your PATH.")
+                logging.error("LocalCA: required system tool missing for install: %s", e)
+                return False
             except Exception as e:
-                logging.error(f"❌ An unexpected error occurred while adding certificate: {e}")
-            
-            _CERT_TRUST_CHECK_DONE_THIS_SESSION = True # Mark as attempted for this session
+                logging.error("LocalCA: unexpected error during CA install: %s", e)
+                return False
 
-        logging.warning("⚠️ You may still need to accept a security warning in your browser for this self-signed certificate, or explicitly mark it as 'Always Trust' in your OS/browser's certificate manager.")
+        # Ensure CA exists
+        _create_ca_if_missing()
+
+        # Attempt to install CA once per session (will set session flag afterwards)
+        if not _CERT_TRUST_CHECK_DONE_THIS_SESSION:
+            installed = _install_ca_system_trust_once()
+            if installed:
+                logging.info("LocalCA: CA install attempted (reported success).")
+            else:
+                logging.warning("LocalCA: CA install did not complete automatically; you may need to import %s manually.", ca_cert_path)
+            _CERT_TRUST_CHECK_DONE_THIS_SESSION = True
+
+        # --- Decide whether to (re)create the leaf cert ---
+        need_create = True
+        if os.path.exists(cert_path) and os.path.exists(key_path) and not force_regenerate:
+            try:
+                existing = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
+                if existing.not_valid_after > datetime.utcnow() + timedelta(days=7):
+                    need_create = False
+                    logging.info("LocalCA: existing leaf cert valid until %s; skipping regen.", existing.not_valid_after.isoformat())
+            except Exception:
+                logging.warning("LocalCA: existing cert present but failed to parse; regenerating.")
+
+        if need_create:
+            logging.info("LocalCA: Creating new leaf certificate signed by local CA...")
+
+            # Load CA key and cert
+            ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
+            ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
+
+            # Create leaf key
+            leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+            # Subject for leaf
+            subject = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+            ])
+            now = datetime.utcnow()
+            builder = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(ca_cert.subject)
+                .public_key(leaf_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(days=1))
+                .not_valid_after(now + timedelta(days=365))
+            )
+
+            # SANs
+            san_list = [x509.DNSName("localhost")]
+            try:
+                san_list.append(x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")))
+                san_list.append(x509.IPAddress(ipaddress.IPv6Address("::1")))
+            except Exception:
+                pass
+
+            try:
+                lan_ip = get_lan_ip()
+                if lan_ip and lan_ip not in ("127.0.0.1", "::1", "0.0.0.0"):
+                    if ":" in lan_ip:
+                        san_list.append(x509.IPAddress(ipaddress.IPv6Address(lan_ip)))
+                    else:
+                        san_list.append(x509.IPAddress(ipaddress.IPv4Address(lan_ip)))
+            except Exception:
+                logging.debug("LocalCA: get_lan_ip failed or returned non-IP")
+
+            builder = builder.add_extension(x509.SubjectAlternativeName(san_list), critical=False)
+
+            # Basic constraints: leaf is not a CA
+            builder = builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            # KeyUsage and EKU
+            builder = builder.add_extension(
+                x509.KeyUsage(
+                    digital_signature=True,
+                    key_encipherment=True,
+                    content_commitment=False,
+                    data_encipherment=False,
+                    key_agreement=False,
+                    key_cert_sign=False,
+                    crl_sign=False,
+                    encipher_only=False,
+                    decipher_only=False
+                ),
+                critical=True
+            )
+            builder = builder.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+
+            # SKI from leaf public key
+            builder = builder.add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
+
+            # AKI referencing the CA
+            try:
+                builder = builder.add_extension(
+                    x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),
+                    critical=False
+                )
+            except Exception:
+                # Fallback: if helper not available, create by matching CA's SKI if present
+                try:
+                    ca_ski = ca_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest
+                    builder = builder.add_extension(
+                        x509.AuthorityKeyIdentifier(key_identifier=ca_ski, authority_cert_issuer=None, authority_cert_serial_number=None),
+                        critical=False
+                    )
+                except Exception:
+                    logging.debug("LocalCA: Could not add AKI by helper or CA SKI; continuing without explicit AKI (not ideal).")
+
+            # Sign using the CA private key
+            cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
+
+            # write key + cert
+            _write_pem(Path(key_path), leaf_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+            _write_pem(Path(cert_path), cert.public_bytes(serialization.Encoding.PEM))
+            logging.info("LocalCA: Wrote signed leaf cert %s and key %s", cert_path, key_path)
+        else:
+            logging.info("LocalCA: Using existing certificate: %s", cert_path)
+
+        # Final note to user
+        logging.warning("If your browser still warns, import the CA root (%s) manually into the System keychain and mark as trusted.", ca_cert_path)
         return cert_path, key_path
+
 
 # HTTP Redirect Logic (only if SECURE_SITE is True)
 if svr_core.config.SECURE_SITE:
@@ -634,6 +741,16 @@ if svr_core.config.SECURE_SITE:
             return svr_core.RedirectResponse(url=new_url, status_code=301)
         return await call_next(request)
 
+
+def auto_open_default_page():
+    try:
+        scheme = "https" if svr_core.config.SECURE_SITE else "http"
+        port = svr_core.config.HTTPS_PORT if svr_core.config.SECURE_SITE else svr_core.config.HTTP_PORT
+        url = f"{scheme}://localhost:{port}/{svr_core.config.DEFAULT_FILE}"
+        logging.info(f"[server] Auto-opening {url}")
+        webbrowser.open(url)
+    except Exception as e:
+        logging.warning(f"Auto-open failed: {e}")
 
 async def run_servers():
     ip = get_lan_ip()
@@ -677,10 +794,18 @@ async def run_servers():
             svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
         )
 
+    if svr_core.config.AUTO_OPEN_DEFAULT:
+        async def _delayed_open():
+            await asyncio.sleep(svr_core.config.AUTO_OPEN_DELAY_SECONDS)
+            # Run sync webbrowser.open without blocking event loop
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, auto_open_default_page)
+        asyncio.create_task(_delayed_open())
+
     servers = [svr_core.uvicorn_module.Server(config) for config in server_configs]
 
     await asyncio.gather(*[server.serve() for server in servers])
-
+ 
 
 if __name__ == "__main__":
     import argparse
@@ -690,7 +815,9 @@ if __name__ == "__main__":
     parser.add_argument("--https-port", type=int, default=None, help="Override HTTPS_PORT from config.")
     parser.add_argument("--secure", type=str, default=None, help="Override SECURE_SITE (true/false).")
     parser.add_argument("--force-cert-regen", action="store_true", help="Force SSL certificate regeneration.")
-    
+    parser.add_argument("--auto-open", action="store_true", help="Auto-open the default page on startup.")
+    parser.add_argument("--open-delay", type=int, default=None, help="Seconds to delay before auto-opening.")
+
     args = parser.parse_args()
 
     # Apply command line overrides
@@ -702,6 +829,10 @@ if __name__ == "__main__":
         svr_config.SECURE_SITE = args.secure.lower() == 'true'
     if args.force_cert_regen:
         svr_config.FORCE_CERTIFICATE_REGENERATION = True
+    if args.auto_open:
+        svr_config.AUTO_OPEN_DEFAULT = True
+    if args.open_delay is not None:
+        svr_config.AUTO_OPEN_DELAY_SECONDS = args.open_delay
 
     # Check if this server instance is being launched by the master (site_manager)
     # This is a simple heuristic based on command-line arguments.
