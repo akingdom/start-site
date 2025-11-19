@@ -13,8 +13,9 @@ is handled by site_manager.py (if present).
 - Optional HTTPS (SECURE_SITE) with inline Local CA + signed localhost leaf
 - Optional HTTP->HTTPS redirect on separate port
 - Minimal cryptography dependency handles
+- Future: Put all primary certificate activity within a class
 """
-VERSION = "1.0.14"
+VERSION = "1.1.0"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -30,6 +31,11 @@ class ServerConfig:
         self.SITE_FOLDER: str = "live"
         # Name of the preferred file to open when a web client doesn't specify a filename.
         self.DEFAULT_FILE: str = "index.html"
+        # A list of allowed symlink target *directories*.
+        # Each entry may be absolute or relative to the start_site_server.py location.
+        # e.g.     "live/assets",       # relative to SITE_FOLDER
+        # e.g.     "/Users/fred/assets/images",  # absolute
+        self.ALLOWED_SYMLINK_TARGETS: list[str] = ["../../js"]
         # True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP.
         self.SECURE_SITE: bool = True
         # Set to True to force regeneration of SSL certificates on startup, even if valid.
@@ -394,14 +400,47 @@ except Exception as e:
 
 # 1.0.5 - now correctly handles subfolders
 def secure_filepath(filepath):
-    """Checks if a filepath is within the SITE_FOLDER."""
-    normalized_site_path = os.path.abspath(os.path.normpath(svr_core.config.SITE_FOLDER))
-    normalized_filepath = os.path.abspath(os.path.normpath(filepath))
-    if not normalized_filepath.startswith(normalized_site_path):
-        print(normalized_site_path)
-        print(normalized_filepath)
-        raise svr_core.HTTPException(status_code=403, detail="Forbidden")
-    return normalized_filepath
+    """
+    Checks if a filepath is within SITE_FOLDER or a whitelisted symlink target.
+    """
+
+    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
+    real = os.path.realpath(filepath)
+
+    # Print mapping the first time only
+    if not hasattr(secure_filepath, "_printed"):
+        print("\n--- Symlink whitelist resolution ---")
+        print("SITE ROOT:", site_root)
+        for target in svr_config.ALLOWED_SYMLINK_TARGETS:
+            allowed_real = os.path.realpath(
+                target if os.path.isabs(target)
+                else os.path.join(site_root, target)
+            )
+            print(f"  ALLOWED: {target}  →  {allowed_real}")
+        secure_filepath._printed = True
+        print("\n")
+
+    # 1. Allow anything inside live/ directly
+    if real == site_root or real.startswith(site_root + os.sep):
+        return real
+
+    # 2. Check whitelisted symlink target dirs
+    for allowed in svr_config.ALLOWED_SYMLINK_TARGETS:
+        allowed_real = os.path.realpath(
+            allowed if os.path.isabs(allowed)
+            else os.path.join(site_root, allowed)
+        )
+
+        if real == allowed_real or real.startswith(allowed_real + os.sep):
+            return real
+
+    # 3. Reject everything else
+    print("SECURITY BLOCKED PATH:")
+    print("  site root:", site_root)
+    print("  real path:", real)
+    raise svr_core.HTTPException(403, "Forbidden symlink target")
+
+
 
 @app.middleware("http")
 async def add_index_html(request: svr_core.Request, call_next):
@@ -416,50 +455,67 @@ async def add_index_html(request: svr_core.Request, call_next):
                     secure_filepath(index_path) #Security check
                     return svr_core.FileResponse(index_path)
                 except svr_core.HTTPException as e:
-                    # Return HTTPException to ensure FastAPI handles it correctly
-                    return svr_core.HTTPException(status_code=e.status_code, detail=e.detail)
+                    raise e
     return response
 
-class SecureStaticFiles(svr_core.StaticFiles): # Inherits from svr_core.StaticFiles
-    async def get_response(self, path: str, scope):
-        full_path = os.path.join(self.directory, path)
-        try:
-            secure_filepath(full_path)
-            response = await super().get_response(path, scope)
-            if path.endswith(".gz"):
-                response.headers["Content-Encoding"] = "gzip"
-                if "content-length" in response.headers:
-                    del response.headers["content-length"]
-                if path.endswith(".js.gz"):
-                    response.headers["Content-Type"] = "application/javascript"
-                elif path.endswith(".css.gz"):
-                    response.headers["Content-Type"] = "text/css"
-                else:
-                    import mimetypes # mimetypes is standard, no need to put in svr_core
-                    base_path, _ = os.path.splitext(path) # Get file without .gz
-                    mime_type, _ = mimetypes.guess_type(base_path)
-                    if mime_type:
-                        response.headers["Content-Type"] = mime_type
-            elif path.endswith(".br"):
-                response.headers["Content-Encoding"] = "br"
-                if "content-length" in response.headers:
-                    del response.headers["content-length"]
-                if path.endswith(".js.br"):
-                    response.headers["Content-Type"] = "application/javascript"
-                elif path.endswith(".css.br"):
-                    response.headers["Content-Type"] = "text/css"
-                else:
-                    import mimetypes
-                    base_path, _ = os.path.splitext(path) # Get file without .br
-                    mime_type, _ = mimetypes.guess_type(base_path)
-                    if mime_type:
-                        response.headers["Content-Type"] = mime_type
-            return response
-        except svr_core.HTTPException as e:
-            # Return HTTPException to ensure FastAPI handles it correctly
-            return svr_core.HTTPException(status_code=e.status_code, detail=e.detail)
+class SecureStaticFiles(svr_core.StaticFiles):
+    def __init__(self, *args, allowed_symlink_targets=None, **kwargs):
+        self.allowed_symlink_targets = allowed_symlink_targets or []
+        super().__init__(*args, **kwargs)
 
-app.mount("/", SecureStaticFiles(directory=svr_core.config.SITE_FOLDER, html=False), name="static")
+    async def get_response(self, path: str, scope):
+        joined = os.path.join(self.directory, path)
+        real_path = os.path.realpath(joined)
+
+        # Security check
+        site_root = os.path.realpath(self.directory)
+        secure_filepath(real_path)  # raises 403 if not allowed
+
+        # If file is outside the site root, serve it manually
+        is_inside_site_root = real_path.startswith(site_root + os.sep)
+
+        if not is_inside_site_root:
+            # Manual file serving for symlink targets
+            if not os.path.exists(real_path):
+                print(real_path)
+                raise svr_core.HTTPException(404, "File not found")
+            resp = svr_core.FileResponse(real_path)
+        else:
+            # Normal StaticFiles behaviour
+            resp = await super().get_response(path, scope)
+
+        # --- GZIP / BROTLI handling ---
+        if path.endswith(".gz"):
+            resp.headers["Content-Encoding"] = "gzip"
+            resp.headers.pop("content-length", None)
+            if path.endswith(".js.gz"):
+                resp.headers["Content-Type"] = "application/javascript"
+            elif path.endswith(".css.gz"):
+                resp.headers["Content-Type"] = "text/css"
+            else:
+                import mimetypes
+                base, _ = os.path.splitext(path)
+                mime, _ = mimetypes.guess_type(base)
+                if mime:
+                    resp.headers["Content-Type"] = mime
+
+        elif path.endswith(".br"):
+            resp.headers["Content-Encoding"] = "br"
+            resp.headers.pop("content-length", None)
+            if path.endswith(".js.br"):
+                resp.headers["Content-Type"] = "application/javascript"
+            elif path.endswith(".css.br"):
+                resp.headers["Content-Type"] = "text/css"
+            else:
+                import mimetypes
+                base, _ = os.path.splitext(path)
+                mime, _ = mimetypes.guess_type(base)
+                if mime:
+                    resp.headers["Content-Type"] = mime
+
+        return resp
+            
+app.mount("/", SecureStaticFiles(directory=svr_core.config.SITE_FOLDER, html=False, allowed_symlink_targets=svr_config.ALLOWED_SYMLINK_TARGETS), name="static")
 
 
 def get_lan_ip():
@@ -494,6 +550,77 @@ def get_lan_ip():
 
 # SSL Certificate Generation (only if SECURE_SITE is True)
 if svr_core.config.SECURE_SITE:
+    # ---------------------------
+    # Certificate utility helpers
+    # ---------------------------
+    import ssl, hashlib
+
+    def _cert_fingerprint(path):
+        """Return sha256 fingerprint of file contents in hex (lowercase)."""
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def _cert_is_valid(cert_path):
+        """Return True if cert exists and is not expired (uses stdlib ssl parser)."""
+        try:
+            cert = ssl._ssl._test_decode_cert(cert_path)
+            not_after_str = cert.get("notAfter")
+            if not not_after_str:
+                return False
+            not_after = datetime.datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
+            return datetime.datetime.utcnow() < not_after
+        except Exception:
+            return False
+
+    def ensure_certificate_exists_and_valid(cert_path, key_path):
+        """True if both files exist and cert is not expired."""
+        if not (os.path.exists(cert_path) and os.path.exists(key_path)):
+            return False
+        if not _cert_is_valid(cert_path):
+            return False
+        return True
+
+    def system_has_cert_with_fingerprint(common_name, local_fp):
+        """
+        macOS: fetch PEM from keychain and compare SHA-256 digest.
+        Returns True if a cert with the given CN and identical digest exists.
+        """
+        try:
+            # -p returns PEM; we hash it to compare apples-to-apples
+            out = subprocess.check_output(
+                ["security", "find-certificate", "-c", common_name, "-p", "/Library/Keychains/System.keychain"],
+                stderr=subprocess.STDOUT
+            )
+            sys_fp = hashlib.sha256(out).hexdigest()
+            return sys_fp == local_fp
+        except subprocess.CalledProcessError:
+            # CN not found → not installed
+            return False
+        except FileNotFoundError:
+            # non-macOS or tool missing → treat as not installed
+            return False
+        except Exception:
+            return False
+
+    def install_certificate_if_needed(ca_cert_path, common_name="Local Dev CA"):
+        """
+        Install CA root into system trust store only if not present or mismatched fingerprint.
+        macOS only. (Linux/Windows handled by your generator’s platform branches if needed.)
+        """
+        local_fp = _cert_fingerprint(ca_cert_path)
+
+        if system_has_cert_with_fingerprint(common_name, local_fp):
+            print("✓ CA certificate already trusted in system keychain — skipping install.")
+            return
+
+        print("→ Installing CA certificate into system trust store (will prompt for sudo)...")
+        subprocess.check_call([
+            "sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
+            "-k", "/Library/Keychains/System.keychain", str(ca_cert_path)
+        ])
+        print("✓ CA certificate installed and trusted.")
+
+    
     def generate_self_signed_cert(cert_path="cert.pem", key_path="key.pem", force_regenerate: bool = False):
         """
         Generate a *CA-signed* localhost certificate (drop-in replacement).
@@ -501,20 +628,20 @@ if svr_core.config.SECURE_SITE:
         - Attempts to install the CA into system trust (best-effort, once per session)
         - Issues a leaf certificate signed by the CA with correct EKU/KU and SANs
         - Regenerates leaf if missing, near expiry, or force_regenerate True
-
+    
         Returns (cert_path_str, key_path_str)
         """
         global _CERT_TRUST_CHECK_DONE_THIS_SESSION
-
+    
         cert_path = str(cert_path)
         key_path = str(key_path)
-
+    
         # --- CA storage paths ---
         ca_base = Path.home() / ".localdev" / "ca"
         ca_key_path = ca_base / "ca.key.pem"
         ca_cert_path = ca_base / "ca.cert.pem"
         ca_base.mkdir(parents=True, exist_ok=True)
-
+    
         def _write_pem(path: Path, data: bytes, mode: int = 0o600):
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "wb") as f:
@@ -523,7 +650,7 @@ if svr_core.config.SECURE_SITE:
                 os.chmod(path, mode)
             except Exception:
                 pass
-
+    
         # Create CA if missing (persistent, long-lived)
         def _create_ca_if_missing(force: bool = False):
             if ca_key_path.exists() and ca_cert_path.exists() and not force:
@@ -559,11 +686,10 @@ if svr_core.config.SECURE_SITE:
                     ),
                     critical=True
                 )
-                # Add a subject key identifier for CA
                 .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
                 .sign(ca_key, hashes.SHA256())
             )
-
+    
             _write_pem(ca_key_path, ca_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -571,53 +697,18 @@ if svr_core.config.SECURE_SITE:
             ))
             _write_pem(ca_cert_path, ca_cert.public_bytes(serialization.Encoding.PEM))
             logging.info("LocalCA: Root CA created at %s", ca_cert_path)
-
-        # Try installing CA to system trust (best-effort)
-        def _install_ca_system_trust_once():
-            if not ca_cert_path.exists():
-                logging.error("LocalCA: CA cert not present for install attempt.")
-                return False
-            try:
-                if sys.platform == "darwin":
-                    cmd = ["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
-                           "-k", "/Library/Keychains/System.keychain", str(ca_cert_path)]
-                    logging.info("LocalCA: Installing CA into macOS System keychain (may prompt for sudo)...")
-                    subprocess.run(cmd, check=True, capture_output=True, text=True)
-                    return True
-                elif sys.platform == "win32":
-                    cmd = ["certutil", "-addstore", "Root", str(ca_cert_path)]
-                    logging.info("LocalCA: Installing CA into Windows Root store (requires admin)...")
-                    subprocess.run(cmd, check=True, capture_output=True, text=True)
-                    return True
-                else:
-                    dest = Path("/usr/local/share/ca-certificates") / (ca_cert_path.stem + ".crt")
-                    logging.info("LocalCA: Installing CA into Linux trust store (may prompt for sudo)...")
-                    subprocess.run(["sudo", "cp", str(ca_cert_path), str(dest)], check=True)
-                    subprocess.run(["sudo", "update-ca-certificates"], check=True)
-                    logging.info("LocalCA: update-ca-certificates completed.")
-                    return True
-            except subprocess.CalledProcessError as e:
-                logging.error("LocalCA: system trust install failed: %s", getattr(e, "stderr", str(e)))
-                return False
-            except FileNotFoundError as e:
-                logging.error("LocalCA: required system tool missing for install: %s", e)
-                return False
-            except Exception as e:
-                logging.error("LocalCA: unexpected error during CA install: %s", e)
-                return False
-
+    
         # Ensure CA exists
         _create_ca_if_missing()
-
-        # Attempt to install CA once per session (will set session flag afterwards)
+    
+        # Attempt to install CA once per session (fingerprint-aware helper)
         if not _CERT_TRUST_CHECK_DONE_THIS_SESSION:
-            installed = _install_ca_system_trust_once()
-            if installed:
-                logging.info("LocalCA: CA install attempted (reported success).")
-            else:
-                logging.warning("LocalCA: CA install did not complete automatically; you may need to import %s manually.", ca_cert_path)
+            try:
+                install_certificate_if_needed(ca_cert_path, common_name="Local Dev CA")
+            except Exception as e:
+                logging.warning("LocalCA: CA install failed or requires manual import: %s", e)
             _CERT_TRUST_CHECK_DONE_THIS_SESSION = True
-
+    
         # --- Decide whether to (re)create the leaf cert ---
         need_create = True
         if os.path.exists(cert_path) and os.path.exists(key_path) and not force_regenerate:
@@ -628,17 +719,17 @@ if svr_core.config.SECURE_SITE:
                     logging.info("LocalCA: existing leaf cert valid until %s; skipping regen.", existing.not_valid_after.isoformat())
             except Exception:
                 logging.warning("LocalCA: existing cert present but failed to parse; regenerating.")
-
+    
         if need_create:
             logging.info("LocalCA: Creating new leaf certificate signed by local CA...")
-
+    
             # Load CA key and cert
             ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
             ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
-
+    
             # Create leaf key
             leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
+    
             # Subject for leaf
             subject = x509.Name([
                 x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
@@ -653,7 +744,7 @@ if svr_core.config.SECURE_SITE:
                 .not_valid_before(now - timedelta(days=1))
                 .not_valid_after(now + timedelta(days=365))
             )
-
+    
             # SANs
             san_list = [x509.DNSName("localhost")]
             try:
@@ -661,7 +752,7 @@ if svr_core.config.SECURE_SITE:
                 san_list.append(x509.IPAddress(ipaddress.IPv6Address("::1")))
             except Exception:
                 pass
-
+    
             try:
                 lan_ip = get_lan_ip()
                 if lan_ip and lan_ip not in ("127.0.0.1", "::1", "0.0.0.0"):
@@ -671,12 +762,9 @@ if svr_core.config.SECURE_SITE:
                         san_list.append(x509.IPAddress(ipaddress.IPv4Address(lan_ip)))
             except Exception:
                 logging.debug("LocalCA: get_lan_ip failed or returned non-IP")
-
+    
             builder = builder.add_extension(x509.SubjectAlternativeName(san_list), critical=False)
-
-            # Basic constraints: leaf is not a CA
             builder = builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            # KeyUsage and EKU
             builder = builder.add_extension(
                 x509.KeyUsage(
                     digital_signature=True,
@@ -692,18 +780,14 @@ if svr_core.config.SECURE_SITE:
                 critical=True
             )
             builder = builder.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-
-            # SKI from leaf public key
             builder = builder.add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
-
-            # AKI referencing the CA
+    
             try:
                 builder = builder.add_extension(
                     x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),
                     critical=False
                 )
             except Exception:
-                # Fallback: if helper not available, create by matching CA's SKI if present
                 try:
                     ca_ski = ca_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest
                     builder = builder.add_extension(
@@ -711,12 +795,10 @@ if svr_core.config.SECURE_SITE:
                         critical=False
                     )
                 except Exception:
-                    logging.debug("LocalCA: Could not add AKI by helper or CA SKI; continuing without explicit AKI (not ideal).")
-
-            # Sign using the CA private key
+                    logging.debug("LocalCA: Could not add AKI; continuing without explicit AKI.")
+    
             cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
-
-            # write key + cert
+    
             _write_pem(Path(key_path), leaf_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,
@@ -726,8 +808,7 @@ if svr_core.config.SECURE_SITE:
             logging.info("LocalCA: Wrote signed leaf cert %s and key %s", cert_path, key_path)
         else:
             logging.info("LocalCA: Using existing certificate: %s", cert_path)
-
-        # Final note to user
+    
         logging.warning("If your browser still warns, import the CA root (%s) manually into the System keychain and mark as trusted.", ca_cert_path)
         return cert_path, key_path
 
@@ -758,12 +839,23 @@ async def run_servers():
     ssl_params = {}
 
     if svr_core.config.SECURE_SITE:
-        cert_path, key_path = generate_self_signed_cert(force_regenerate=svr_core.config.FORCE_CERTIFICATE_REGENERATION)
+        cert_path, key_path = generate_self_signed_cert(
+            cert_path="cert.pem",
+            key_path="key.pem",
+            force_regenerate=svr_core.config.FORCE_CERTIFICATE_REGENERATION
+        )
         ssl_params = {"ssl_certfile": cert_path, "ssl_keyfile": key_path}
-        print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n Connect to 'https://{ip}:{svr_core.config.HTTPS_PORT}'\n (or https://localhost:{svr_core.config.HTTPS_PORT})\n (ver {svr_core.config.VERSION})")
+    
+        print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
+              f" Connect to 'https://{ip}:{svr_core.config.HTTPS_PORT}'\n"
+              f" (or https://localhost:{svr_core.config.HTTPS_PORT})\n"
+              f" (ver {svr_core.config.VERSION})")
         print(f"HTTP redirects from 'http://{ip}:{svr_core.config.HTTP_PORT}' to HTTPS.")
     else:
-        print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n Connect to 'http://{ip}:{svr_core.config.HTTP_PORT}'\n (ver {svr_core.config.VERSION})")
+        print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
+              f" Connect to 'http://{ip}:{svr_core.config.HTTP_PORT}'\n"
+              f" (ver {svr_core.config.VERSION})")
+
 
     print("=== FastAPI routes ===")
     for route in app.routes:
@@ -833,6 +925,8 @@ if __name__ == "__main__":
         svr_config.AUTO_OPEN_DEFAULT = True
     if args.open_delay is not None:
         svr_config.AUTO_OPEN_DELAY_SECONDS = args.open_delay
+
+    print("--- start ---")
 
     # Check if this server instance is being launched by the master (site_manager)
     # This is a simple heuristic based on command-line arguments.
