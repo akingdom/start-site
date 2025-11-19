@@ -13,6 +13,7 @@ is handled by site_manager.py (if present).
 - Optional HTTPS (SECURE_SITE) with inline Local CA + signed localhost leaf
 - Optional HTTP->HTTPS redirect on separate port
 - Minimal cryptography dependency handles
+- Future: Put all primary certificate activity within a class
 """
 VERSION = "1.1.0"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
