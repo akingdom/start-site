@@ -1,5 +1,5 @@
 # start-site
-Serves a local folder as a website. Useful for when you need a web server for quick testing
+Serves a local folder as a website. Useful for when you need a customisable web server for quick testing. 
 
 ## Prerequisites
 
@@ -39,6 +39,7 @@ class ServerConfig:
         self.FORCE_CERTIFICATE_REGENERATION: bool = False  # Set to True to force regeneration of SSL certificates on startup, even if valid. Set to False (default) to only regenerate if missing or expired.
         self.BASE_PORT: int = 8001  # A fixed, well-known base port for the master server across all instances (used by site_manager.py). Generally this should never change.
         self.VERSION: str = VERSION  # Application version number. Note: Leave this as-is, as it reflects the version above.
+        ...
 # --- END EDITABLE SERVER CONFIGURATION ---
 ```
 
