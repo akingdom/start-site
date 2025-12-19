@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Future: Put all primary certificate activity within a class
 """
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -157,10 +157,14 @@ class ServerCore:
 
             if _AUTO_INSTALL_CHOICE is None:
                 while True:
-                    choice = input(
-                        "Critical dependencies are missing. "
-                        "Do you want to attempt automatic installation? (y/n/q for quit): "
-                    ).lower().strip()
+                    try:
+                        choice = input(
+                            "Critical dependencies are missing. "
+                            "Do you want to attempt automatic installation? (y/n/q for quit): "
+                        ).lower().strip()
+                    except Exception:
+                        # Non-interactive environment: default to not auto-install
+                        choice = "n"
                     if choice == 'y':
                         _AUTO_INSTALL_CHOICE = True
                         break
@@ -223,6 +227,23 @@ class ServerCore:
             logging.warning(f"⚠️ Optional dependencies are missing: {', '.join(missing_optional)}")
             logging.warning("Some features may be unavailable. Install with: pip install " + " ".join(missing_optional))
             
+        # --- Dynamic attribute assignment ---
+        # Attach imported modules to self with safe attribute names for dot-access.
+        # e.g., 'numpy' -> self.numpy_module, 'fastapi.responses' -> self.fastapi_responses_module
+        for mod_name, mod_obj in list(self._imported_modules_cache.items()):
+            # Prefer a short attribute name using the last dotted segment, e.g. 'numpy' -> 'numpy_module'
+            short = mod_name.split('.')[-1].replace('-', '_')
+            attr_name = f"{short}_module"
+            # Avoid overwriting explicit attributes like FastAPI, FileResponse, etc.
+            if hasattr(self, attr_name):
+                # If attribute exists, try a more specific name
+                attr_name = mod_name.replace('.', '_').replace('-', '_') + "_module"
+            try:
+                setattr(self, attr_name, mod_obj)
+                logging.debug(f"Attached module {mod_name} as attribute {attr_name} on ServerCore")
+            except Exception as e:
+                logging.debug(f"Could not attach module {mod_name} to ServerCore: {e}")
+
         return True, ""
 
     load_endpoint_modules = _ensure_dependencies  # convenience alias
@@ -318,8 +339,7 @@ def get_pykelet_metadata(html_content: str) -> Optional[Dict]:
     """
     # Regex to find the entire PYKELET comment block
     # It looks for ''
-    pykelet_comment_pattern = re.compile(r'', re.DOTALL)
-    
+    pykelet_comment_pattern = re.compile(r'<!--\s*PYKELET\b(.*?)-->', html_content, re.DOTALL)
     match = pykelet_comment_pattern.search(html_content)
 
     if match:
