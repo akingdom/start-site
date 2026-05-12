@@ -1,6 +1,11 @@
 # site_endpoints.py — Boilerplate for add endpoint
+#
+# This module is loaded by start_site_server.py via:
+#     import site_endpoints
+#     site_endpoints.init(app, svr_core)
+# Keep the signature: def init(app: FastAPI, svr_core) -> None:
 
-# Declare numpy dependency
+# Declare numpy dependency - this is preferred over 'import xxx' in this particular file.
 REQUIRED_ENDPOINT_MODULES = {
     "numpy": ("numpy", True),
 }
