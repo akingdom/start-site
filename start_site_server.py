@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Future: Put all primary certificate activity within a class
 """
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -46,8 +46,10 @@ class ServerConfig:
         self.AUTO_OPEN_DEFAULT: bool = True
         # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
         self.AUTO_OPEN_DELAY_SECONDS: int = 1
-        # A fixed, well-known base port for the master server across all instances (used by site_manager.py). Generally this should never change.
-        self.BASE_PORT: int = 8001
+        # Port for the AdREST manager service (HTTP only, localhost).
+        self.ADREST_PORT: int = 8001
+        # Enable AdREST dynamic port management. Set to False to run as a standalone server.
+        self.ADREST_ENABLED: bool = True
         # Application version number. Note: Leave this as-is, as it reflects the version above.
         self.VERSION: str = VERSION
 
@@ -55,7 +57,6 @@ class ServerConfig:
 
 
 import os
-import socket #obsolete?
 import sys
 import importlib
 import asyncio
@@ -64,8 +65,11 @@ import ipaddress
 from datetime import datetime, timedelta, timezone
 import subprocess
 from pathlib import Path
-import logging # Added for consistent logging
+import logging
 import re
+import json
+import platform
+import socket
 from typing import Dict, Tuple, Any, Optional, Callable # Added for type hinting
 
 # --- cryptography imports (modern style) ---
@@ -243,7 +247,6 @@ class ServerCore:
                 logging.debug(f"Attached module {mod_name} as attribute {attr_name} on ServerCore")
             except Exception as e:
                 logging.debug(f"Could not attach module {mod_name} to ServerCore: {e}")
-
         return True, ""
 
     load_endpoint_modules = _ensure_dependencies  # convenience alias
@@ -325,7 +328,6 @@ class ServerCore:
                     success = False
                     msg = "Incomplete cryptography setup."
 
-
         return success, msg
 
 # ADDED: Function to extract PYKELET metadata from HTML.
@@ -392,30 +394,6 @@ except ImportError as e:
     logging.warning(f"site_endpoints unused (import error): {e}")
 except Exception as e:
     logging.error(f"site_endpoints unused (other error): {e}")
-
-# --- Load Site Manager (if site_manager.py exists) ---
-try:
-    if os.path.exists("site_manager.py"): # Check if the file exists
-        import site_manager
-        # Pass the main app, svr_core, and the necessary config values and functions
-        # This makes site_manager truly self-contained after its init.
-        site_manager.init(
-            app,
-            svr_core,
-            config_file="registered_sites.json", # Consistent filename for registered sites
-            base_port=svr_core.config.BASE_PORT, # Use the BASE_PORT from svr_core's config
-            get_pykelet_func=get_pykelet_metadata # Pass the function to site_manager
-        )
-        logging.info("site_manager is active")
-    else:
-        # LOGGING CORRECTION: The message "No module named 'site_manager'" is a symptom
-        # of the file not being found/imported, not the cause.
-        logging.info("site_manager.py not found. Running as a standalone server.")
-except ImportError as e:
-    # This might happen if site_manager.py is present but has syntax errors etc.
-    logging.warning(f"site_manager unused (import error): {e}")
-except Exception as e:
-    logging.error(f"site_manager unused (other error): {e}")
 
 
 # 1.0.5 - now correctly handles subfolders
@@ -592,6 +570,7 @@ if svr_core.config.SECURE_SITE:
         except Exception:
             return False
 
+    # Be most cautious to change this
     def ensure_certificate_exists_and_valid(cert_path, key_path):
         """True if both files exist and cert is not expired."""
         if not (os.path.exists(cert_path) and os.path.exists(key_path)):
@@ -661,7 +640,7 @@ if svr_core.config.SECURE_SITE:
         ca_key_path = ca_base / "ca.key.pem"
         ca_cert_path = ca_base / "ca.cert.pem"
         ca_base.mkdir(parents=True, exist_ok=True)
-    
+
         def _write_pem(path: Path, data: bytes, mode: int = 0o600):
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "wb") as f:
@@ -772,7 +751,6 @@ if svr_core.config.SECURE_SITE:
                 san_list.append(x509.IPAddress(ipaddress.IPv6Address("::1")))
             except Exception:
                 pass
-    
             try:
                 lan_ip = get_lan_ip()
                 if lan_ip and lan_ip not in ("127.0.0.1", "::1", "0.0.0.0"):
@@ -782,7 +760,6 @@ if svr_core.config.SECURE_SITE:
                         san_list.append(x509.IPAddress(ipaddress.IPv4Address(lan_ip)))
             except Exception:
                 logging.debug("LocalCA: get_lan_ip failed or returned non-IP")
-    
             builder = builder.add_extension(x509.SubjectAlternativeName(san_list), critical=False)
             builder = builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             builder = builder.add_extension(
@@ -801,7 +778,6 @@ if svr_core.config.SECURE_SITE:
             )
             builder = builder.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             builder = builder.add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
-    
             try:
                 builder = builder.add_extension(
                     x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),
@@ -816,9 +792,7 @@ if svr_core.config.SECURE_SITE:
                     )
                 except Exception:
                     logging.debug("LocalCA: Could not add AKI; continuing without explicit AKI.")
-    
             cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
-    
             _write_pem(Path(key_path), leaf_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PrivateFormat.PKCS8,
@@ -828,7 +802,6 @@ if svr_core.config.SECURE_SITE:
             logging.info("LocalCA: Wrote signed leaf cert %s and key %s", cert_path, key_path)
         else:
             logging.info("LocalCA: Using existing certificate: %s", cert_path)
-    
         logging.warning("If your browser still warns, import the CA root (%s) manually into the System keychain and mark as trusted.", ca_cert_path)
         return cert_path, key_path
 
@@ -853,7 +826,8 @@ def auto_open_default_page():
     except Exception as e:
         logging.warning(f"Auto-open failed: {e}")
 
-async def run_servers():
+
+async def run_servers(manager_config=None):
     ip = get_lan_ip()
     cert_path, key_path = None, None
     ssl_params = {}
@@ -865,7 +839,8 @@ async def run_servers():
             force_regenerate=svr_core.config.FORCE_CERTIFICATE_REGENERATION
         )
         ssl_params = {"ssl_certfile": cert_path, "ssl_keyfile": key_path}
-    
+
+    if svr_core.config.SECURE_SITE:
         print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
               f" Connect to 'https://{ip}:{svr_core.config.HTTPS_PORT}'\n"
               f" (or https://localhost:{svr_core.config.HTTPS_PORT})\n"
@@ -888,23 +863,29 @@ async def run_servers():
             # This is a heuristic; direct inspection of APIRouter's name isn't always straightforward post-mount.
             # We can imply it if it's a known pattern like '/api/manager'
             if route.path == '/api/manager':
-                 print(f"{route.path:<20} ↪ mounted app: Site Manager API")
+                print(f"{route.path:<20} ↪ mounted app: AdREST Manager API")
             else:
                 print(f"{route.path:<20} ↪ mounted app: {type(route.app).__name__}")
         else:
             print(f"{route.path:<20} ↪ [unknown route type]")
 
-    server_configs = [
-        # Main HTTPS server
-        # Use uvicorn_module from svr_core. This assumes uvicorn.Config and uvicorn.Server are accessible via it.
-        svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan="off", **ssl_params)
-    ]
+    server_configs = []
 
     if svr_core.config.SECURE_SITE:
         # HTTP redirect server
         server_configs.append(
+            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan="off", **ssl_params)
+        )
+        server_configs.append(
             svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
         )
+    else:
+        server_configs.append(
+            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
+        )
+
+    if manager_config is not None:
+        server_configs.append(manager_config)
 
     if svr_core.config.AUTO_OPEN_DEFAULT:
         async def _delayed_open():
@@ -915,9 +896,8 @@ async def run_servers():
         asyncio.create_task(_delayed_open())
 
     servers = [svr_core.uvicorn_module.Server(config) for config in server_configs]
-
     await asyncio.gather(*[server.serve() for server in servers])
- 
+
 
 if __name__ == "__main__":
     import argparse
@@ -929,6 +909,7 @@ if __name__ == "__main__":
     parser.add_argument("--force-cert-regen", action="store_true", help="Force SSL certificate regeneration.")
     parser.add_argument("--auto-open", action="store_true", help="Auto-open the default page on startup.")
     parser.add_argument("--open-delay", type=int, default=None, help="Seconds to delay before auto-opening.")
+    parser.add_argument("--disable-adrest", action="store_true", help="Disable AdREST dynamic port management.")
 
     args = parser.parse_args()
 
@@ -945,78 +926,237 @@ if __name__ == "__main__":
         svr_config.AUTO_OPEN_DEFAULT = True
     if args.open_delay is not None:
         svr_config.AUTO_OPEN_DELAY_SECONDS = args.open_delay
+    if args.disable_adrest:
+        svr_config.ADREST_ENABLED = False
 
     print("--- start ---")
 
-    # Check if this server instance is being launched by the master (site_manager)
-    # This is a simple heuristic based on command-line arguments.
-    # If both --port and --secure are provided, assume it's a client instance.
-    is_client_instance = args.port is not None and args.secure is not None
-    
-    if not is_client_instance:
-        # Only if not a client instance, attempt to register with a master.
-        # This part assumes a master is running on BASE_PORT.
-        # This is where a client would attempt to register itself with the master server.
-        # The master server would then assign it a specific port.
-        master_server_url = f"http://127.0.0.1:{svr_config.BASE_PORT}/api/manager/register_site"
-        logging.info(f"Attempting to connect to master server at {master_server_url} for registration...")
-        
-        # This part requires an async call, but we are in a sync context.
-        # A simple non-blocking HTTP client or a separate thread could be used.
-        # For simplicity in this example, we will just log the attempt.
-        # In a real-world scenario, you'd use a library like 'httpx' or 'requests' (in a thread/asyncio.run).
-        
-        # Note: If start_site_server.py *is* the master (i.e., site_manager.py exists
-        # and it's being run directly without --port/--secure), it won't try to register with itself.
-        # The logic below is for when a *different* instance is the master.
-        
-        # For a truly robust system, this registration might be:
-        # 1. An HTTP request to the master from the client
-        # 2. The master's responsibility to monitor and launch clients (as site_manager does)
-        # 
-        # Given the current design, if *this* instance is meant to be the master,
-        # it should just proceed to run run_servers() and `site_manager` handles things.
-        # If it's a client, it should register *then* run run_servers() with its assigned port.
-        #
-        # For now, we'll assume the master is launched separately, and client instances
-        # launched by the master will receive --port and --secure.
-        # If this instance is NOT a client instance (i.e., it's a standalone or the master itself),
-        # it just runs the server as configured.
-        
-        # You would typically have a dedicated client-side registration function here
-        # that uses something like `httpx` to send the registration request.
-        # For now, we'll just log if it's *not* a client instance.
-        
-        if not os.path.exists("site_manager.py"):
-             logging.info("Not running as a site manager. This instance is a standalone server.")
-        else:
-             logging.info("Site manager found. This instance is acting as the master server.")
-        
-    #TODO - check if we still need this stub
-    # Check if the HTTP redirect is still needed based on potentially updated SECURE_SITE
-    # If hub logic changed SECURE_SITE to False, the redirect server should not run
-    #if not svr_core.config.SECURE_SITE and redirect_app in [c.app for c in server_configs if hasattr(c, 'app')]:
-    #    # This part is tricky. If svr_core.config.SECURE_SITE changed during hub logic,
-    #    # the run_servers function needs to be re-evaluated or adjusted.
-    #    # For simplicity, we'll let run_servers handle it based on the final svr_core.config.SECURE_SITE.
-    #    pass 
+    # ── Dynamic port assignment & service‑registry (AdREST) ───────────────
+    # Only active when AdREST is enabled AND no explicit ports are given.
+    explicit_ports = (args.port is not None) or (args.https_port is not None)
 
-    # If hub logic modified ports/secure status, reflect that in run_servers arguments
-    # No, run_servers directly accesses svr_core.config, so changes made to svr_core.config.HTTP_PORT
-    # and svr_core.config.SECURE_SITE by the hub logic will automatically be picked up.
-    # In start_site_server.py, around where you call asyncio.run
-    try:
-        asyncio.run(run_servers())
-    except KeyboardInterrupt:
-        logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
-        # Add any *additional* cleanup code here that needs to run
-        # after asyncio.run finishes due to KeyboardInterrupt
-        pass # No extra cleanup needed if Uvicorn handles it all
-    except Exception as e:
-        logging.critical(f"An unexpected error occurred during server runtime: {e}")
-        sys.exit(1)
-    finally:
-        # This block *always* runs, whether an error occurred or not,
-        # and whether KeyboardInterrupt was caught or not.
-        # Good for ensuring final resources are released.
-        logging.info("Application finished.")
+    if svr_config.ADREST_ENABLED and not explicit_ports:
+        from pathlib import Path
+        from datetime import datetime, timezone
+
+        # ── cross‑platform file locking ─────────────────────────────────
+        if platform.system() == "Windows":
+            import msvcrt
+            def _lock_file(fh):
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            def _unlock_file(fh):
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            def _lock_file(fh):
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            def _unlock_file(fh):
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+        # ── path helpers ────────────────────────────────────────────────
+        def _user_data_dir():
+            if platform.system() == "Windows":
+                base = Path(os.environ.get("APPDATA",
+                             Path.home() / "AppData" / "Roaming"))
+            elif platform.system() == "Darwin":
+                base = Path.home() / "Library" / "Application Support"
+            else:
+                base = Path(os.environ.get("XDG_DATA_HOME",
+                             Path.home() / ".local" / "share"))
+            return base / "workspace-server"
+
+        def _get_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                return s.getsockname()[1]
+
+        def _check_identity(port, expected_key):
+            import urllib.request
+            import urllib.error
+            try:
+                url = f"http://127.0.0.1:{port}/api/identity"
+                with urllib.request.urlopen(url, timeout=1.0) as resp:
+                    data = json.loads(resp.read().decode())
+                    return data.get("key") == expected_key
+            except Exception:
+                return False
+
+        # ── per‑user registry files ─────────────────────────────────────
+        data_dir = _user_data_dir()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        registry_path = data_dir / "port-registry.json"
+        lock_path = data_dir / "port-registry.lock"
+
+        manager_key = "services.adrest"
+        our_key = os.environ.get("WORKSPACE_SERVICE_KEY", "com.workspace.supersystem")
+
+        # Every managed server exposes its identity
+        @app.get("/api/identity")
+        async def _identity():
+            return {"key": our_key}
+
+        # ── acquire / fail to acquire the user‑level lock ────────────────
+        lock_file = open(lock_path, "a")
+        try:
+            _lock_file(lock_file)
+            we_are_manager = True
+        except (IOError, OSError):
+            we_are_manager = False
+
+        manager_config = None
+
+        if we_are_manager:
+            # ── WE ARE THE ADREST MANAGER ────────────────────────────────
+            registry = {}
+            if registry_path.exists():
+                try:
+                    registry = json.loads(registry_path.read_text())
+                except json.JSONDecodeError:
+                    pass
+
+            for key in list(registry.keys()):
+                entry = registry[key]
+                port = entry.get("http_port")
+                if port and not _check_identity(port, key):
+                    logging.info("Removing stale registry entry '%s'", key)
+                    del registry[key]
+
+            http_port = _get_free_port()
+            https_port = _get_free_port() if svr_config.SECURE_SITE else 0
+
+            now = datetime.now(timezone.utc).isoformat()
+            registry[manager_key] = {
+                "http_port": http_port,
+                "https_port": https_port,
+                "pid": os.getpid(),
+                "last_seen": now,
+            }
+            registry[our_key] = {
+                "http_port": http_port,
+                "https_port": https_port,
+                "pid": os.getpid(),
+                "last_seen": now,
+            }
+            registry_path.write_text(json.dumps(registry, indent=2, ensure_ascii=False))
+
+            svr_core.config.HTTP_PORT = http_port
+            svr_core.config.HTTPS_PORT = https_port if svr_config.SECURE_SITE else http_port  # fallback
+
+            # ── Manager FastAPI app (HTTP only, on ADREST_PORT) ──────────
+            manager_app = svr_core.FastAPI()
+
+            @manager_app.post("/api/manager/register")
+            async def _register_service(request: svr_core.Request):
+                body = await request.json()
+                key = body.get("key")
+                if not key:
+                    raise svr_core.HTTPException(400, detail="'key' is required.")
+                reg = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+                if key in reg:
+                    existing = reg[key]
+                    if _check_identity(existing["http_port"], key):
+                        raise svr_core.HTTPException(409, detail=f"Service '{key}' is already registered.")
+                    else:
+                        del reg[key]
+                new_http = _get_free_port()
+                new_https = _get_free_port() if svr_config.SECURE_SITE else 0
+                reg[key] = {
+                    "http_port": new_http,
+                    "https_port": new_https,
+                    "pid": -1,
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                }
+                registry_path.write_text(json.dumps(reg, indent=2, ensure_ascii=False))
+                logging.info("Registered service '%s' on ports %d/%d", key, new_http, new_https)
+                return {"http_port": new_http, "https_port": new_https}
+
+            @manager_app.delete("/api/manager/unregister")
+            async def _unregister_service(request: svr_core.Request):
+                body = await request.json()
+                key = body.get("key")
+                if not key:
+                    raise svr_core.HTTPException(400, detail="'key' is required.")
+                if key == manager_key:
+                    raise svr_core.HTTPException(400, detail="Cannot unregister the manager.")
+                reg = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+                reg.pop(key, None)
+                registry_path.write_text(json.dumps(reg, indent=2, ensure_ascii=False))
+                return {"status": "ok"}
+
+            @manager_app.get("/api/manager/status")
+            async def _manager_status():
+                reg = json.loads(registry_path.read_text()) if registry_path.exists() else {}
+                return {"registry": reg}
+
+            manager_config = svr_core.uvicorn_module.Config(
+                manager_app, host="127.0.0.1", port=svr_config.ADREST_PORT, lifespan="off"
+            )
+            # Keep the lock open for the lifetime of the manager
+            app.state.workspace_lock_file = lock_file
+            logging.info(
+                "AdREST manager active on ports %d (HTTP) / %d (HTTPS), manager HTTP on %d",
+                http_port, https_port, svr_config.ADREST_PORT
+            )
+
+        else:
+            # ── WE ARE A CLIENT ─────────────────────────────────────────
+            lock_file.close()
+            import urllib.request
+            import urllib.error
+            # Try to contact the manager directly on ADREST_PORT
+            manager_url = f"http://127.0.0.1:{svr_config.ADREST_PORT}/api/manager/register"
+            try:
+                data = json.dumps({"key": our_key}).encode("utf-8")
+                req = urllib.request.Request(manager_url, data=data, method="POST",
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"Registration failed: {resp.read().decode()}")
+                    result = json.loads(resp.read().decode())
+                    svr_core.config.HTTP_PORT = result["http_port"]
+                    svr_core.config.HTTPS_PORT = result["https_port"]
+                    logging.info(
+                        "Registered as '%s' on ports %d/%d",
+                        our_key, result["http_port"], result["https_port"]
+                    )
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(f"Registration failed: {e.read().decode()}") from e
+            except urllib.error.URLError as e:
+                raise RuntimeError(
+                    f"Cannot contact the AdREST manager on port {svr_config.ADREST_PORT}. "
+                    "Is the first server instance running?"
+                ) from e
+
+        # Pass manager_config to run_servers (will be None for clients)
+        try:
+            asyncio.run(run_servers(manager_config=manager_config))
+        except KeyboardInterrupt:
+            logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
+            # Add any *additional* cleanup code here that needs to run
+            # after asyncio.run finishes due to KeyboardInterrupt
+            pass # No extra cleanup needed if Uvicorn handles it all
+        except Exception as e:
+            logging.critical(f"An unexpected error occurred during server runtime: {e}")
+            sys.exit(1)
+        finally:
+            # This block *always* runs, whether an error occurred or not,
+            # and whether KeyboardInterrupt was caught or not.
+            # Good for ensuring final resources are released.
+            logging.info("Application finished.")
+    else:
+        # Standalone mode – use configured ports, no AdREST
+        try:
+            asyncio.run(run_servers())
+        except KeyboardInterrupt:
+            logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
+            # Add any *additional* cleanup code here that needs to run
+            # after asyncio.run finishes due to KeyboardInterrupt
+            pass # No extra cleanup needed if Uvicorn handles it all
+        except Exception as e:
+            logging.critical(f"An unexpected error occurred during server runtime: {e}")
+            sys.exit(1)
+        finally:
+            # This block *always* runs, whether an error occurred or not,
+            # and whether KeyboardInterrupt was caught or not.
+            # Good for ensuring final resources are released.
+            logging.info("Application finished.")
