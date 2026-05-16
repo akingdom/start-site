@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -46,18 +46,18 @@ class ServerConfig:
         self.AUTO_OPEN_DEFAULT: bool = True
         # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
         self.AUTO_OPEN_DELAY_SECONDS: int = 1
-        # Port for the AdREST manager service (HTTP only, localhost).
-        self.ADREST_PORT: int = 8001
         # Enable AdREST dynamic port management. Set to False to run as a standalone server.
         self.ADREST_ENABLED: bool = True
 
-        # ── new configuration fields (previously hardcoded) ─────────────────
+        # ── New configuration fields (v1.2.0+) ─────────────────────────
         # Enable Uvicorn lifespan events (startup/shutdown). Default off.
         self.ENABLE_LIFESPAN: bool = False
-        # Custom SSL certificate and key file paths. If empty, auto-generate.
+        # Custom SSL certificate and key file paths. If empty, the server
+        # auto‑generates a self‑signed certificate via CertificateManager.
         self.SSL_CERT_FILE: str = ""
         self.SSL_KEY_FILE: str = ""
-        # Whether to serve static files from SITE_FOLDER. Set to False for a pure WebSocket server.
+        # Whether to serve static files from SITE_FOLDER.
+        # Set to False for a pure API / WebSocket server.
         self.SERVE_STATIC_FILES: bool = True
 
         # Application version number. Note: Leave this as-is, as it reflects the version above.
@@ -522,8 +522,6 @@ class SecureStaticFiles(svr_core.StaticFiles):
                     resp.headers["Content-Type"] = mime
 
         return resp
-            
-app.mount("/", SecureStaticFiles(directory=svr_core.config.SITE_FOLDER, html=False, allowed_symlink_targets=svr_config.ALLOWED_SYMLINK_TARGETS), name="static")
 
 
 def get_lan_ip():
@@ -847,6 +845,10 @@ async def run_servers(manager_config=None):
     cert_path, key_path = None, None
     ssl_params = {}
 
+    # Conditional static file mount (move from top-level)
+    if svr_core.config.SERVE_STATIC_FILES:
+        app.mount("/", SecureStaticFiles(directory=svr_core.config.SITE_FOLDER, html=False, allowed_symlink_targets=svr_config.ALLOWED_SYMLINK_TARGETS), name="static")
+
     if svr_core.config.SECURE_SITE:
         # Use custom certificate files if provided, otherwise generate via CertificateManager
         if svr_core.config.SSL_CERT_FILE and svr_core.config.SSL_KEY_FILE:
@@ -863,26 +865,6 @@ async def run_servers(manager_config=None):
             )
         ssl_params = {"ssl_certfile": cert_path, "ssl_keyfile": key_path}
 
-    # Static file serving – can be disabled via configuration
-    if svr_core.config.SERVE_STATIC_FILES:
-        # Already mounted at top-level, but if we want to respect the flag
-        # we need to remove the unconditional mount above and handle here.
-        # For now, the mount line exists above; we'll leave it but also respect the flag.
-        # To avoid double-mount, the above mount is removed in the final version
-        # and we only mount here.
-        pass  # The actual mount is done in the next block
-    else:
-        # If static files are disabled, we must not mount the StaticFiles app
-        # The existing mount line at the top level will still be active, so we must
-        # ensure it's removed or conditioned. For now, we note that the mount line
-        # above needs to be wrapped in a conditional.
-        pass
-
-    # For cleanliness, the unconditional mount at the top-level should be replaced
-    # by a conditional mount within run_servers. We'll restructure slightly:
-    # Remove the top-level app.mount line and put it here.
-    # (We'll do that in the final answer.)
-
     if svr_core.config.SECURE_SITE:
         print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
               f" Connect to 'https://{ip}:{svr_core.config.HTTPS_PORT}'\n"
@@ -898,13 +880,9 @@ async def run_servers(manager_config=None):
     print("=== FastAPI routes ===")
     for route in app.routes:
         if hasattr(route, "endpoint"):
-            # For routes attached to APIRouter, the endpoint's __module__ helps identify origin.
             module_name = route.endpoint.__module__.split('.')[-1] if route.endpoint.__module__ else 'unknown'
             print(f"{route.path:<20} → {route.endpoint.__name__} (from {module_name}.py)")
-        elif hasattr(route, "app"): # e.g., for StaticFiles mount and APIRouter mounts
-            # For mounted APIRouters, the route.app will be an instance of FastAPI, but we want the APIRouter's name.
-            # This is a heuristic; direct inspection of APIRouter's name isn't always straightforward post-mount.
-            # We can imply it if it's a known pattern like '/api/manager'
+        elif hasattr(route, "app"):
             if route.path == '/api/manager':
                 print(f"{route.path:<20} ↪ mounted app: AdREST Manager API")
             else:
@@ -917,7 +895,6 @@ async def run_servers(manager_config=None):
     lifespan_mode = "on" if svr_core.config.ENABLE_LIFESPAN else "off"
 
     if svr_core.config.SECURE_SITE:
-        # HTTP redirect server
         server_configs.append(
             svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
         )
@@ -943,17 +920,6 @@ async def run_servers(manager_config=None):
     await asyncio.gather(*[server.serve() for server in servers])
 
 
-# Remove the top-level static mount (replaced by conditional inside run_servers)
-# The original line: app.mount("/", SecureStaticFiles(...)) is now moved into run_servers.
-# But we need to ensure we don't break the static serving for those who want it.
-# So we'll delete the top-level mount and add the conditional mount inside run_servers.
-
-# We'll actually place the conditional mount right after the route listing print, before building server configs.
-# That requires editing run_servers. Let's add it there.
-
-# In the final version below, we have integrated the conditional static mount properly.
-
-
 if __name__ == "__main__":
     import argparse
 
@@ -964,7 +930,7 @@ if __name__ == "__main__":
     parser.add_argument("--force-cert-regen", action="store_true", help="Force SSL certificate regeneration.")
     parser.add_argument("--auto-open", action="store_true", help="Auto-open the default page on startup.")
     parser.add_argument("--open-delay", type=int, default=None, help="Seconds to delay before auto-opening.")
-    parser.add_argument("--disable-adrest", action="store_true", help="Disable AdREST dynamic port management.")
+    parser.add_argument("--disable-adrest", action="store_true", help="Disable AdREST dynamic port management for this run.")
 
     args = parser.parse_args()
 
@@ -1025,6 +991,15 @@ if __name__ == "__main__":
                 s.bind(("127.0.0.1", 0))
                 return s.getsockname()[1]
 
+        def _port_is_free(port):
+            """Return True if port can be bound on 127.0.0.1."""
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", port))
+                    return True
+            except OSError:
+                return False
+
         def _check_identity(port, expected_key):
             import urllib.request
             import urllib.error
@@ -1035,6 +1010,20 @@ if __name__ == "__main__":
                     return data.get("key") == expected_key
             except Exception:
                 return False
+
+        # ── Helper to reuse a port if still free, else allocate a new one ─
+        def _reuse_or_allocate_port(registry, key, label="port"):
+            port = None
+            entry = registry.get(key)
+            if entry:
+                candidate = entry.get("http_port")
+                if candidate and _port_is_free(candidate):
+                    port = candidate
+                    logging.info("Reusing previous %s %d", label, port)
+            if port is None:
+                port = _get_free_port()
+                logging.info("Allocated new %s %d", label, port)
+            return port
 
         # ── per‑user registry files ─────────────────────────────────────
         data_dir = _user_data_dir()
@@ -1069,7 +1058,7 @@ if __name__ == "__main__":
                 except json.JSONDecodeError:
                     pass
 
-            # Remove truly stale entries
+            # Remove stale entries
             for key in list(registry.keys()):
                 entry = registry[key]
                 port = entry.get("http_port")
@@ -1077,47 +1066,29 @@ if __name__ == "__main__":
                     logging.info("Removing stale registry entry '%s'", key)
                     del registry[key]
 
-            # ── Try to reuse existing ports for our own key ────────────
-            http_port = None
-            https_port = None
+            # Reuse or allocate main HTTP/HTTPS ports
+            http_port = _reuse_or_allocate_port(registry, our_key, "HTTP port")
 
-            existing = registry.get(our_key)
-            if existing:
-                candidate_http = existing.get("http_port")
-                candidate_https = existing.get("https_port", 0)
-
-                def _port_is_free(port):
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.bind(("127.0.0.1", port))
-                            return True
-                    except OSError:
-                        return False
-
-                if candidate_http and _port_is_free(candidate_http):
-                    http_port = candidate_http
-                    logging.info("Reusing previous HTTP port %d", http_port)
-                if (svr_config.SECURE_SITE and candidate_https
-                        and candidate_https != candidate_http
-                        and _port_is_free(candidate_https)):
-                    https_port = candidate_https
+            if svr_config.SECURE_SITE:
+                # HTTPS port reuse
+                https_port = None
+                existing = registry.get(our_key)
+                if existing and existing.get("https_port") and _port_is_free(existing["https_port"]):
+                    https_port = existing["https_port"]
                     logging.info("Reusing previous HTTPS port %d", https_port)
-
-            # Fall back to new ports if any couldn't be reused
-            if http_port is None:
-                http_port = _get_free_port()
-                logging.info("Allocated new HTTP port %d", http_port)
-            if https_port is None or https_port == 0:
-                if svr_config.SECURE_SITE:
+                if https_port is None:
                     https_port = _get_free_port()
                     logging.info("Allocated new HTTPS port %d", https_port)
-                else:
-                    https_port = http_port  # not used, but kept for registry
+            else:
+                https_port = http_port  # unused field in registry but kept for consistency
+
+            # Reuse or allocate AdREST manager port
+            adrest_port = _reuse_or_allocate_port(registry, manager_key, "AdREST manager port")
 
             now = datetime.now(timezone.utc).isoformat()
+            # Update registry
             registry[manager_key] = {
-                "http_port": http_port,
-                "https_port": https_port,
+                "http_port": adrest_port,
                 "pid": os.getpid(),
                 "last_seen": now,
             }
@@ -1133,7 +1104,7 @@ if __name__ == "__main__":
             if svr_config.SECURE_SITE:
                 svr_core.config.HTTPS_PORT = https_port
 
-            # ── Manager FastAPI app (HTTP only, on ADREST_PORT) ──────────
+            # ── Manager FastAPI app (HTTP only, on adrest_port) ──────────
             manager_app = svr_core.FastAPI()
 
             @manager_app.post("/api/manager/register")
@@ -1180,13 +1151,13 @@ if __name__ == "__main__":
                 return {"registry": reg}
 
             manager_config = svr_core.uvicorn_module.Config(
-                manager_app, host="127.0.0.1", port=svr_config.ADREST_PORT, lifespan="off"
+                manager_app, host="127.0.0.1", port=adrest_port, lifespan="off"
             )
             # Keep the lock open for the lifetime of the manager
             app.state.workspace_lock_file = lock_file
             logging.info(
                 "AdREST manager active on ports %d (HTTP) / %d (HTTPS), manager HTTP on %d",
-                http_port, https_port, svr_config.ADREST_PORT
+                http_port, https_port, adrest_port
             )
 
         else:
@@ -1194,8 +1165,22 @@ if __name__ == "__main__":
             lock_file.close()
             import urllib.request
             import urllib.error
-            # Try to contact the manager directly on ADREST_PORT
-            manager_url = f"http://127.0.0.1:{svr_config.ADREST_PORT}/api/manager/register"
+
+            # Discover manager from registry
+            reg = {}
+            if registry_path.exists():
+                try:
+                    reg = json.loads(registry_path.read_text())
+                except json.JSONDecodeError:
+                    pass
+            manager_entry = reg.get(manager_key)
+            if not manager_entry:
+                raise RuntimeError("No AdREST manager found in registry. Start the first server without explicit ports first.")
+            manager_port = manager_entry.get("http_port")
+            if not manager_port:
+                raise RuntimeError("AdREST manager entry is missing port information.")
+
+            manager_url = f"http://127.0.0.1:{manager_port}/api/manager/register"
             try:
                 data = json.dumps({"key": our_key}).encode("utf-8")
                 req = urllib.request.Request(manager_url, data=data, method="POST",
@@ -1214,7 +1199,7 @@ if __name__ == "__main__":
                 raise RuntimeError(f"Registration failed: {e.read().decode()}") from e
             except urllib.error.URLError as e:
                 raise RuntimeError(
-                    f"Cannot contact the AdREST manager on port {svr_config.ADREST_PORT}. "
+                    f"Cannot contact the AdREST manager on port {manager_port}. "
                     "Is the first server instance running?"
                 ) from e
 
