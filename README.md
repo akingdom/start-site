@@ -136,7 +136,6 @@ You can add custom API endpoints without modifying the core script.
 
 1. Create a file named `site_endpoints.py` in the same directory.
 2. Define an `init(app, svr_core)` function. The server calls it after creating the FastAPI app, so you can add routes, middleware, or background tasks.
-3. See the [Super‑System](https://github.com/akingdom/start-site) repository for a full example workspace that builds on `start-site`.
 
 Example (`site_endpoints.py`):
 ```python
