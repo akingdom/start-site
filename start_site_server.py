@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Future: Put all primary certificate activity within a class
 """
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -1014,6 +1014,7 @@ if __name__ == "__main__":
                 except json.JSONDecodeError:
                     pass
 
+            # Remove truly stale entries
             for key in list(registry.keys()):
                 entry = registry[key]
                 port = entry.get("http_port")
@@ -1021,9 +1022,45 @@ if __name__ == "__main__":
                     logging.info("Removing stale registry entry '%s'", key)
                     del registry[key]
 
-            http_port = _get_free_port()
-            https_port = _get_free_port() if svr_config.SECURE_SITE else 0
+            # ── Try to reuse existing ports for our own key ────────────
+            http_port = None
+            https_port = None
 
+            existing = registry.get(our_key)
+            if existing:
+                candidate_http = existing.get("http_port")
+                candidate_https = existing.get("https_port", 0)
+
+                # Check if the old ports are still free (not grabbed by another process)
+                def _port_is_free(port):
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.bind(("127.0.0.1", port))
+                            return True
+                    except OSError:
+                        return False
+
+                if candidate_http and _port_is_free(candidate_http):
+                    http_port = candidate_http
+                    logging.info("Reusing previous HTTP port %d", http_port)
+                if (svr_config.SECURE_SITE and candidate_https
+                        and candidate_https != candidate_http
+                        and _port_is_free(candidate_https)):
+                    https_port = candidate_https
+                    logging.info("Reusing previous HTTPS port %d", https_port)
+
+            # Fall back to new ports if any couldn't be reused
+            if http_port is None:
+                http_port = _get_free_port()
+                logging.info("Allocated new HTTP port %d", http_port)
+            if https_port is None or https_port == 0:
+                if svr_config.SECURE_SITE:
+                    https_port = _get_free_port()
+                    logging.info("Allocated new HTTPS port %d", https_port)
+                else:
+                    https_port = http_port  # not used, but kept for registry
+
+            # ── Write updated registry ────────────────────────────────
             now = datetime.now(timezone.utc).isoformat()
             registry[manager_key] = {
                 "http_port": http_port,
@@ -1040,7 +1077,8 @@ if __name__ == "__main__":
             registry_path.write_text(json.dumps(registry, indent=2, ensure_ascii=False))
 
             svr_core.config.HTTP_PORT = http_port
-            svr_core.config.HTTPS_PORT = https_port if svr_config.SECURE_SITE else http_port  # fallback
+            if svr_config.SECURE_SITE:
+                svr_core.config.HTTPS_PORT = https_port
 
             # ── Manager FastAPI app (HTTP only, on ADREST_PORT) ──────────
             manager_app = svr_core.FastAPI()
