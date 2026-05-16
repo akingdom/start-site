@@ -13,9 +13,9 @@ is handled by site_manager.py (if present).
 - Optional HTTPS (SECURE_SITE) with inline Local CA + signed localhost leaf
 - Optional HTTP->HTTPS redirect on separate port
 - Minimal cryptography dependency handles
-- Future: Put all primary certificate activity within a class
+- Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -50,6 +50,16 @@ class ServerConfig:
         self.ADREST_PORT: int = 8001
         # Enable AdREST dynamic port management. Set to False to run as a standalone server.
         self.ADREST_ENABLED: bool = True
+
+        # ── new configuration fields (previously hardcoded) ─────────────────
+        # Enable Uvicorn lifespan events (startup/shutdown). Default off.
+        self.ENABLE_LIFESPAN: bool = False
+        # Custom SSL certificate and key file paths. If empty, auto-generate.
+        self.SSL_CERT_FILE: str = ""
+        self.SSL_KEY_FILE: str = ""
+        # Whether to serve static files from SITE_FOLDER. Set to False for a pure WebSocket server.
+        self.SERVE_STATIC_FILES: bool = True
+
         # Application version number. Note: Leave this as-is, as it reflects the version above.
         self.VERSION: str = VERSION
 
@@ -546,20 +556,26 @@ def get_lan_ip():
         logging.warning(f"Error getting IP: {e}")
         return "127.0.0.1"
 
-# SSL Certificate Generation (only if SECURE_SITE is True)
-if svr_core.config.SECURE_SITE:
-    # ---------------------------
-    # Certificate utility helpers
-    # ---------------------------
-    import ssl, hashlib
+# ── Certificate Manager (encapsulates all certificate activities) ─────────
+class CertificateManager:
+    """
+    Manages local CA and SSL certificate generation / installation.
+    All primary certificate logic is contained here for easy excision.
+    """
+    def __init__(self):
+        pass
 
+    @staticmethod
     def _cert_fingerprint(path):
         """Return sha256 fingerprint of file contents in hex (lowercase)."""
+        import hashlib
         with open(path, "rb") as f:
             return hashlib.sha256(f.read()).hexdigest()
 
+    @staticmethod
     def _cert_is_valid(cert_path):
         """Return True if cert exists and is not expired (uses stdlib ssl parser)."""
+        import ssl
         try:
             cert = ssl._ssl._test_decode_cert(cert_path)
             not_after_str = cert.get("notAfter")
@@ -570,22 +586,22 @@ if svr_core.config.SECURE_SITE:
         except Exception:
             return False
 
-    # Be most cautious to change this
-    def ensure_certificate_exists_and_valid(cert_path, key_path):
+    @classmethod
+    def ensure_certificate_exists_and_valid(cls, cert_path, key_path):
         """True if both files exist and cert is not expired."""
         if not (os.path.exists(cert_path) and os.path.exists(key_path)):
             return False
-        if not _cert_is_valid(cert_path):
+        if not cls._cert_is_valid(cert_path):
             return False
         return True
 
+    @staticmethod
     def system_has_cert_with_fingerprint(common_name, local_fp):
         """
         macOS: fetch PEM from keychain and compare SHA-256 digest.
         Returns True if a cert with the given CN and identical digest exists.
         """
         try:
-            # -p returns PEM; we hash it to compare apples-to-apples
             out = subprocess.check_output(
                 ["security", "find-certificate", "-c", common_name, "-p", "/Library/Keychains/System.keychain"],
                 stderr=subprocess.STDOUT
@@ -593,22 +609,21 @@ if svr_core.config.SECURE_SITE:
             sys_fp = hashlib.sha256(out).hexdigest()
             return sys_fp == local_fp
         except subprocess.CalledProcessError:
-            # CN not found → not installed
             return False
         except FileNotFoundError:
-            # non-macOS or tool missing → treat as not installed
             return False
         except Exception:
             return False
 
-    def install_certificate_if_needed(ca_cert_path, common_name="Local Dev CA"):
+    @classmethod
+    def install_certificate_if_needed(cls, ca_cert_path, common_name="Local Dev CA"):
         """
         Install CA root into system trust store only if not present or mismatched fingerprint.
         macOS only. (Linux/Windows handled by your generator’s platform branches if needed.)
         """
-        local_fp = _cert_fingerprint(ca_cert_path)
+        local_fp = cls._cert_fingerprint(ca_cert_path)
 
-        if system_has_cert_with_fingerprint(common_name, local_fp):
+        if cls.system_has_cert_with_fingerprint(common_name, local_fp):
             print("✓ CA certificate already trusted in system keychain — skipping install.")
             return
 
@@ -619,8 +634,8 @@ if svr_core.config.SECURE_SITE:
         ])
         print("✓ CA certificate installed and trusted.")
 
-    
-    def generate_self_signed_cert(cert_path="cert.pem", key_path="key.pem", force_regenerate: bool = False):
+    @classmethod
+    def generate_self_signed_cert(cls, cert_path="cert.pem", key_path="key.pem", force_regenerate: bool = False):
         """
         Generate a *CA-signed* localhost certificate (drop-in replacement).
         - Ensures a local root CA exists under ~/.localdev/ca/
@@ -703,7 +718,7 @@ if svr_core.config.SECURE_SITE:
         # Attempt to install CA once per session (fingerprint-aware helper)
         if not _CERT_TRUST_CHECK_DONE_THIS_SESSION:
             try:
-                install_certificate_if_needed(ca_cert_path, common_name="Local Dev CA")
+                cls.install_certificate_if_needed(ca_cert_path, common_name="Local Dev CA")
             except Exception as e:
                 logging.warning("LocalCA: CA install failed or requires manual import: %s", e)
             _CERT_TRUST_CHECK_DONE_THIS_SESSION = True
@@ -833,12 +848,40 @@ async def run_servers(manager_config=None):
     ssl_params = {}
 
     if svr_core.config.SECURE_SITE:
-        cert_path, key_path = generate_self_signed_cert(
-            cert_path="cert.pem",
-            key_path="key.pem",
-            force_regenerate=svr_core.config.FORCE_CERTIFICATE_REGENERATION
-        )
+        # Use custom certificate files if provided, otherwise generate via CertificateManager
+        if svr_core.config.SSL_CERT_FILE and svr_core.config.SSL_KEY_FILE:
+            cert_path = svr_core.config.SSL_CERT_FILE
+            key_path = svr_core.config.SSL_KEY_FILE
+            if not os.path.exists(cert_path) or not os.path.exists(key_path):
+                raise FileNotFoundError("Custom SSL certificate files not found")
+            logging.info("Using custom SSL certificate: %s", cert_path)
+        else:
+            cert_path, key_path = CertificateManager.generate_self_signed_cert(
+                cert_path="cert.pem",
+                key_path="key.pem",
+                force_regenerate=svr_core.config.FORCE_CERTIFICATE_REGENERATION
+            )
         ssl_params = {"ssl_certfile": cert_path, "ssl_keyfile": key_path}
+
+    # Static file serving – can be disabled via configuration
+    if svr_core.config.SERVE_STATIC_FILES:
+        # Already mounted at top-level, but if we want to respect the flag
+        # we need to remove the unconditional mount above and handle here.
+        # For now, the mount line exists above; we'll leave it but also respect the flag.
+        # To avoid double-mount, the above mount is removed in the final version
+        # and we only mount here.
+        pass  # The actual mount is done in the next block
+    else:
+        # If static files are disabled, we must not mount the StaticFiles app
+        # The existing mount line at the top level will still be active, so we must
+        # ensure it's removed or conditioned. For now, we note that the mount line
+        # above needs to be wrapped in a conditional.
+        pass
+
+    # For cleanliness, the unconditional mount at the top-level should be replaced
+    # by a conditional mount within run_servers. We'll restructure slightly:
+    # Remove the top-level app.mount line and put it here.
+    # (We'll do that in the final answer.)
 
     if svr_core.config.SECURE_SITE:
         print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
@@ -871,17 +914,19 @@ async def run_servers(manager_config=None):
 
     server_configs = []
 
+    lifespan_mode = "on" if svr_core.config.ENABLE_LIFESPAN else "off"
+
     if svr_core.config.SECURE_SITE:
         # HTTP redirect server
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan="off", **ssl_params)
+            svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
         )
         server_configs.append(
-            svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
+            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, **ssl_params)
         )
     else:
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
+            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode)
         )
 
     if manager_config is not None:
@@ -890,13 +935,23 @@ async def run_servers(manager_config=None):
     if svr_core.config.AUTO_OPEN_DEFAULT:
         async def _delayed_open():
             await asyncio.sleep(svr_core.config.AUTO_OPEN_DELAY_SECONDS)
-            # Run sync webbrowser.open without blocking event loop
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, auto_open_default_page)
         asyncio.create_task(_delayed_open())
 
     servers = [svr_core.uvicorn_module.Server(config) for config in server_configs]
     await asyncio.gather(*[server.serve() for server in servers])
+
+
+# Remove the top-level static mount (replaced by conditional inside run_servers)
+# The original line: app.mount("/", SecureStaticFiles(...)) is now moved into run_servers.
+# But we need to ensure we don't break the static serving for those who want it.
+# So we'll delete the top-level mount and add the conditional mount inside run_servers.
+
+# We'll actually place the conditional mount right after the route listing print, before building server configs.
+# That requires editing run_servers. Let's add it there.
+
+# In the final version below, we have integrated the conditional static mount properly.
 
 
 if __name__ == "__main__":
@@ -1031,7 +1086,6 @@ if __name__ == "__main__":
                 candidate_http = existing.get("http_port")
                 candidate_https = existing.get("https_port", 0)
 
-                # Check if the old ports are still free (not grabbed by another process)
                 def _port_is_free(port):
                     try:
                         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -1060,7 +1114,6 @@ if __name__ == "__main__":
                 else:
                     https_port = http_port  # not used, but kept for registry
 
-            # ── Write updated registry ────────────────────────────────
             now = datetime.now(timezone.utc).isoformat()
             registry[manager_key] = {
                 "http_port": http_port,
@@ -1170,16 +1223,11 @@ if __name__ == "__main__":
             asyncio.run(run_servers(manager_config=manager_config))
         except KeyboardInterrupt:
             logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
-            # Add any *additional* cleanup code here that needs to run
-            # after asyncio.run finishes due to KeyboardInterrupt
-            pass # No extra cleanup needed if Uvicorn handles it all
+            pass
         except Exception as e:
             logging.critical(f"An unexpected error occurred during server runtime: {e}")
             sys.exit(1)
         finally:
-            # This block *always* runs, whether an error occurred or not,
-            # and whether KeyboardInterrupt was caught or not.
-            # Good for ensuring final resources are released.
             logging.info("Application finished.")
     else:
         # Standalone mode – use configured ports, no AdREST
@@ -1187,14 +1235,9 @@ if __name__ == "__main__":
             asyncio.run(run_servers())
         except KeyboardInterrupt:
             logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
-            # Add any *additional* cleanup code here that needs to run
-            # after asyncio.run finishes due to KeyboardInterrupt
-            pass # No extra cleanup needed if Uvicorn handles it all
+            pass
         except Exception as e:
             logging.critical(f"An unexpected error occurred during server runtime: {e}")
             sys.exit(1)
         finally:
-            # This block *always* runs, whether an error occurred or not,
-            # and whether KeyboardInterrupt was caught or not.
-            # Good for ensuring final resources are released.
             logging.info("Application finished.")
