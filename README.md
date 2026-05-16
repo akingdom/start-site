@@ -108,6 +108,8 @@ class ServerConfig:
         self.AUTO_OPEN_DELAY_SECONDS: int = 1
         # Enable AdREST dynamic port management. Set to False to run as a standalone server.
         self.ADREST_ENABLED: bool = True
+        # Time in seconds to graciously (safely, politely) shutdown the server when the user presses Control-C on keyboard
+        self.SHUTDOWN_TIMEOUT: int = 5
 
         # ── New configuration fields (v1.2.0+) ───────────────────────
         # Enable Uvicorn lifespan events (startup/shutdown).  Default off.
