@@ -36,7 +36,26 @@ It serves a static folder, optionally over HTTPS, and can run multiple independe
 ## Important
 
 - **HTTPS** may require restarting the browser the first time if a security warning appears – the server creates a local CA and installs it automatically (macOS). On other platforms you may need to accept the self‑signed certificate manually.
+- If you already have your own SSL certificate, set `SSL_CERT_FILE` and `SSL_KEY_FILE` in the configuration. The server will use them instead of generating a self‑signed one.
 - The server runs from its own directory; change the current working directory to the script’s location before starting.
+
+---
+
+## Basic HTTP Setup (no encryption)
+
+If you don't need HTTPS, simply set `SECURE_SITE = False` and (optionally) `ADREST_ENABLED = False` for a plain HTTP server:
+
+```python
+class ServerConfig:
+    def __init__(self):
+        self.HTTP_PORT = 8002
+        self.SECURE_SITE = False
+        self.ADREST_ENABLED = False   # if you want a fixed port
+        # ... rest of your settings
+```
+
+Then run `python3 start_site_server.py`. The server will start on `http://localhost:8002`.  
+You can still use AdREST with HTTP – just leave `ADREST_ENABLED = True` and the manager will assign free ports automatically.
 
 ---
 
@@ -95,10 +114,24 @@ class ServerConfig:
         self.ADREST_PORT: int = 8001   # well‑known port for the manager
         self.ADREST_ENABLED: bool = True
 
+        # ── New configuration fields (v1.2.0+) ───────────────────────
+        # Enable Uvicorn lifespan events (startup/shutdown).  Default off.
+        self.ENABLE_LIFESPAN: bool = False
+        # Custom SSL certificate and key file paths.  If empty, the server
+        # auto‑generates a self‑signed certificate via CertificateManager.
+        self.SSL_CERT_FILE: str = ""
+        self.SSL_KEY_FILE: str = ""
+        # Whether to serve static files from SITE_FOLDER.
+        # Set to False for a pure API / WebSocket server.
+        self.SERVE_STATIC_FILES: bool = True
+
         # Application version number.  Leave as‑is.
         self.VERSION: str = VERSION
 # --- END EDITABLE SERVER CONFIGURATION ---
 ```
+
+### Certificate management
+All certificate operations (CA creation, self‑signed cert generation, system trust store installation) are now encapsulated in the `CertificateManager` class. If you want to remove certificate functionality entirely, you can delete that class and the corresponding `SECURE_SITE` logic without affecting the rest of the server.
 
 ---
 
@@ -116,6 +149,10 @@ def init(app, svr_core):
     @app.get("/api/hello")
     async def hello():
         return {"message": "Hello from site_endpoints!"}
+
+    # You can also adjust server configuration from here
+    svr_core.config.ENABLE_LIFESPAN = True       # if your endpoints need lifespan events
+    svr_core.config.SERVE_STATIC_FILES = False   # if you only need WebSocket/API
 ```
 
 The file is optional – if it doesn’t exist, the server runs without extra endpoints.
