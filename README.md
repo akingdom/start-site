@@ -134,6 +134,8 @@ All certificate operations (CA creation, self‑signed cert generation, system t
 
 ## Extending the server (`site_endpoints.py`)
 
+It is strongly recommended to make no changes to the `start_site_server` script, treating it as *immutable*, apart from customising settings in the `ServerConfig` class.
+
 You can add custom API endpoints without modifying the core script.
 
 1. Create a file named `site_endpoints.py` in the same directory.
