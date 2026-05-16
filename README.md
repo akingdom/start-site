@@ -65,15 +65,17 @@ When multiple users (or multiple projects) want to run `start_site_server.py` on
 **AdREST** solves this automatically:
 
 1. The **first instance** that starts (without explicit `--port` and `--https-port` arguments) becomes the *AdREST manager*.  
-   - It picks two free ports (HTTP and HTTPS) and writes them into a per‑user registry file (`~/.local/share/workspace-server/port-registry.json`).  
-   - It also runs a tiny HTTP API on `localhost:ADREST_PORT` (default 8001) where other instances can request their own ports.
+   - It picks free ports for the main HTTP/HTTPS server **and** a free port for the manager API.  
+   - The manager port is stored in a per‑user registry file (`~/.local/share/workspace-server/port-registry.json`) under the key `"services.adrest"`.  
+   - The manager API (`/api/manager/*`) runs on its own isolated port, bound to `127.0.0.1`, so it is never accessible from the browser or external network.
 
-2. **Subsequent instances** (started by the same user) automatically contact the manager, receive unique ports, and start listening on those ports – no collisions, no manual configuration.
+2. **Subsequent instances** read the registry to discover the manager’s port, then call `POST /api/manager/register` on that port to receive unique HTTP/HTTPS ports – no collisions, no manual configuration.
 
 3. **Standalone mode**  
    Pass `--port` and `--https-port` on the command line, or set `ADREST_ENABLED = False` in the configuration, to disable AdREST entirely. The server will then use the ports you specify (or the defaults) and ignore the manager.
 
-> **Tip:** On shared machines each user gets their own registry file, so multiple users can run their own manager without interference.
+> **Tip:** On shared machines each user gets their own registry file, so multiple users can run their own manager without interference.  
+> The manager and workspace ports are **reused** on restart if still free, keeping addresses stable.
 
 ---
 
@@ -104,14 +106,7 @@ class ServerConfig:
         self.AUTO_OPEN_DEFAULT: bool = True
         # Optional delay (seconds) before auto‑opening the browser.
         self.AUTO_OPEN_DELAY_SECONDS: int = 1
-
-        # ── AdREST dynamic port manager ──────────────────────────────
-        # The first instance becomes a lightweight “AdREST” service‑registry
-        # that assigns unique ports to later local servers (per user).
-        # The manager listens on 127.0.0.1:ADREST_PORT (HTTP only).
-        # Set ADREST_ENABLED = False to run as a standalone server and
-        # ignore the dynamic registry completely.
-        self.ADREST_PORT: int = 8001   # well‑known port for the manager
+        # Enable AdREST dynamic port management. Set to False to run as a standalone server.
         self.ADREST_ENABLED: bool = True
 
         # ── New configuration fields (v1.2.0+) ───────────────────────
