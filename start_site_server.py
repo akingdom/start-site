@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -48,7 +48,9 @@ class ServerConfig:
         self.AUTO_OPEN_DELAY_SECONDS: int = 1
         # Enable AdREST dynamic port management. Set to False to run as a standalone server.
         self.ADREST_ENABLED: bool = True
-
+        # Time in seconds to graciously (safely, politely) shutdown the server
+        self.SHUTDOWN_TIMEOUT: int = 5
+        
         # ── New configuration fields (v1.2.0+) ─────────────────────────
         # Enable Uvicorn lifespan events (startup/shutdown). Default off.
         self.ENABLE_LIFESPAN: bool = False
@@ -898,14 +900,14 @@ async def run_servers(manager_config=None):
 
     if svr_core.config.SECURE_SITE:
         server_configs.append(
-            svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off")
+            svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
         )
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, **ssl_params)
+            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT, **ssl_params)
         )
     else:
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode)
+            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
         )
 
     if manager_config is not None:
@@ -1153,10 +1155,23 @@ if __name__ == "__main__":
                 return {"registry": reg}
 
             manager_config = svr_core.uvicorn_module.Config(
-                manager_app, host="127.0.0.1", port=adrest_port, lifespan="off"
+                manager_app, host="127.0.0.1", port=adrest_port, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT
             )
             # Keep the lock open for the lifetime of the manager
             app.state.workspace_lock_file = lock_file
+            import atexit
+            def _release_lock():
+                try:
+                    lock_file.close()
+                except Exception:
+                    pass
+            atexit.register(_release_lock)
+            
+            @app.on_event("shutdown")
+            async def _shutdown_release_lock():
+                _release_lock()
+                
+                
             logging.info(
                 "AdREST manager active on ports %d (HTTP) / %d (HTTPS), manager HTTP on %d",
                 http_port, https_port, adrest_port
