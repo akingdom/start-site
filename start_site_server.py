@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -81,6 +81,8 @@ import json
 import platform
 import socket
 from typing import Dict, Tuple, Any, Optional, Callable # Added for type hinting
+
+import hashlib
 
 # --- cryptography imports (modern style) ---
 from cryptography import x509
