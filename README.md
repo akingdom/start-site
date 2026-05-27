@@ -157,6 +157,20 @@ The file is optional – if it doesn’t exist, the server runs without extra en
 
 ---
 
+### Launching a registered service
+
+Use the included `adrest_launcher.py` to open any AdREST‑registered service
+in your browser without knowing its port:
+
+```bash
+python adrest_launcher.py com.workspace.supersystem
+```
+
+If the service isn’t running, the script will offer to start
+`start_site_server.py` and then open the browser automatically.
+
+---
+
 ## Command‑line options
 
 | Flag | Description |
