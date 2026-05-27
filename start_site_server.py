@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 # author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -28,14 +28,14 @@ class ServerConfig:
         # TCP Port for HTTPS traffic
         self.HTTPS_PORT: int = 8003
         # Folder containing web-site files. This site folder must be in the same 'parent' folder that contains this start_site.py script.
-        self.SITE_FOLDER: str = "live"
+        self.SITE_FOLDER: str = 'live'
         # Name of the preferred file to open when a web client doesn't specify a filename.
-        self.DEFAULT_FILE: str = "index.html"
+        self.DEFAULT_FILE: str = 'index.html'
         # A list of allowed symlink target *directories*.
         # Each entry may be absolute or relative to the start_site_server.py location.
         # e.g.     "live/assets",       # relative to SITE_FOLDER
         # e.g.     "/Users/fred/assets/images",  # absolute
-        self.ALLOWED_SYMLINK_TARGETS: list[str] = ["../../js"]
+        self.ALLOWED_SYMLINK_TARGETS: list[str] = ['../../js']
         # True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP.
         self.SECURE_SITE: bool = True
         # Set to True to force regeneration of SSL certificates on startup, even if valid.
@@ -56,8 +56,8 @@ class ServerConfig:
         self.ENABLE_LIFESPAN: bool = False
         # Custom SSL certificate and key file paths. If empty, the server
         # auto‑generates a self‑signed certificate via CertificateManager.
-        self.SSL_CERT_FILE: str = ""
-        self.SSL_KEY_FILE: str = ""
+        self.SSL_CERT_FILE: str = ''
+        self.SSL_KEY_FILE: str = ''
         # Whether to serve static files from SITE_FOLDER.
         # Set to False for a pure API / WebSocket server.
         self.SERVE_STATIC_FILES: bool = True
@@ -139,7 +139,7 @@ class ServerCore:
         self.StaticFiles: Optional[Callable] = None
         self.APIRouter: Optional[Callable] = None # ADDED: For site_manager to use APIRouter from FastAPI
 
-    def _ensure_dependencies(self, required_modules: Dict[str, Tuple[str, bool]]) -> Tuple[bool, str]:
+    def _ensure_dependencies(self, required_modules: Dict[str, Tuple[str, bool]], interactive: bool = True) -> Tuple[bool, str]:
         """
         Internal method to check for and optionally install required Python modules.
         Note that calling this is a convenience, not a requirement.
@@ -169,6 +169,9 @@ class ServerCore:
                     missing_optional.append(pip_name)
 
         if missing_critical_for_install:
+            if not interactive:
+                return False, f"❌ Missing dependencies: {', '.join(missing_critical_for_install)}. Please install them manually."
+
             pip_install_cmd = "pip install " + " ".join(missing_critical_for_install)
             logging.info(f"Critical dependencies missing: {', '.join(missing_critical_for_install)}")
             logging.info(f"Recommended installation command: {pip_install_cmd}")
