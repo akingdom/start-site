@@ -171,6 +171,38 @@ If the service isn’t running, the script will offer to start
 
 ---
 
+## Diagnostics
+
+When something goes wrong, the server writes a **state snapshot** to a plain Markdown file.
+You can open it in any editor — no browser required.
+
+**Location (cross‑platform):**
+
+| OS | Path |
+|----|------|
+| Linux | `~/.local/share/workspace-server/diagnostics/com.workspace.supersystem.md` |
+| macOS | `~/Library/Application Support/workspace-server/diagnostics/com.workspace.supersystem.md` |
+| Windows | `%APPDATA%/workspace-server/diagnostics/com.workspace.supersystem.md` |
+
+The file is regenerated at startup and updated when important events occur. It answers:
+
+- **"Is the server running?"** — status, PID, ports, uptime.
+- **"Is SSL working?"** — certificate validity and trust status.
+- **"What services are registered?"** — live registry table with alive/dead flags.
+- **"Which projects are broken?"** — per‑project health (requires `site_endpoints.py`).
+
+A companion file `workspace.md` in the same directory shows per‑project health
+(requires the `site_endpoints.py` that ships with the Super‑System).
+
+The diagnostics directory is private (`0700` permissions). Each file is less than
+5 KB and is pruned automatically when services stop. No user data is ever included —
+only metadata (ports, PIDs, project names, dependency lists).
+
+> **Before suggesting any fix, check the diagnostic file.** It should tell you
+> exactly which component failed.
+
+---
+
 ## Command‑line options
 
 | Flag | Description |
