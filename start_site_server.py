@@ -15,8 +15,8 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.4.3"
-# author: Andrew Kingdom, Copyright(C)2025, All rights reserved, MIT License (CC-BY).
+VERSION = "1.5.0"
+# author: Andrew Kingdom, Copyright(C)2025-2026, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
 
@@ -61,6 +61,12 @@ class ServerConfig:
         # Whether to serve static files from SITE_FOLDER.
         # Set to False for a pure API / WebSocket server.
         self.SERVE_STATIC_FILES: bool = True
+
+        # ── Diagnostics ──────────────────────────────────────────────
+        # Enable per‑service Markdown diagnostic snapshots to be written.
+        # Set to False to disable file‑based diagnostics.
+        # (the /api/diagnostics endpoint remains active regardless).
+        self.DIAGNOSTICS_ENABLED: bool = True
 
         # Application version number. Note: Leave this as-is, as it reflects the version above.
         self.VERSION: str = VERSION
@@ -380,6 +386,119 @@ def get_pykelet_metadata(html_content: str) -> Optional[Dict]:
         return pykelet_meta if pykelet_meta else None
     return None # No PYKELET comment found
 
+# ── Diagnostics helpers ────────────────────────────────────────────────────
+
+def _user_data_dir():
+    """Return the per‑user data directory for workspace runtime files."""
+    if platform.system() == "Windows":
+        base = Path(os.environ.get("APPDATA",
+                    Path.home() / "AppData" / "Roaming"))
+    elif platform.system() == "Darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME",
+                    Path.home() / ".local" / "share"))
+    return base / "workspace-server"
+
+
+def _diagnostics_dir():
+    """Return the path to the diagnostics snapshot directory."""
+    return _user_data_dir() / "diagnostics"
+
+
+def _atomic_write_md(path: Path, content: str) -> None:
+    """Atomically write a Markdown diagnostic file (temp + rename)."""
+    tmp = path.with_suffix(".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _stale_pid(pid: int) -> bool:
+    """Return True if the given PID is not currently running."""
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)  # signal 0 checks existence only
+        return False
+    except (OSError, ProcessLookupError):
+        return True
+
+
+def write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None):
+    """Write (or update) the Markdown diagnostic file for this service."""
+    if not svr_core.config.DIAGNOSTICS_ENABLED:
+        return
+
+    diag_dir = _diagnostics_dir()
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    diag_path = diag_dir / f"{our_key}.md"
+    server_path = os.path.dirname(os.path.abspath(__file__))
+
+    http_port = svr_core.config.HTTP_PORT
+    https_port = svr_core.config.HTTPS_PORT if svr_core.config.SECURE_SITE else 0
+    pid = os.getpid()
+    uptime = int(time.time() - _svr_start_time) if '_svr_start_time' in dir() else 0
+
+    lines = []
+    lines.append(f"# {our_key} — Service State")
+    lines.append(f"**Reported at:** {_now_iso()}")
+    lines.append("")
+    lines.append("## Server")
+    lines.append(f"- Server Folder: {server_path}")
+    lines.append(f"- Status: **running**")
+    lines.append(f"- PID: {pid}")
+    lines.append(f"- Ports: HTTP {http_port}" + (f", HTTPS {https_port}" if https_port else ""))
+    lines.append(f"- Secure site: {'yes' if svr_core.config.SECURE_SITE else 'no'}")
+    lines.append(f"- Uptime: {uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s")
+    lines.append(f"- Python: {sys.version.split()[0]}")
+    lines.append(f"- Platform: {platform.system()}-{platform.release()}")
+    lines.append(f"- Version: {svr_core.config.VERSION}")
+    lines.append("")
+
+    if cert_info:
+        lines.append("## SSL Certificate")
+        lines.append(f"- Valid: {'yes' if cert_info.get('valid') else '**NO — EXPIRED OR INVALID**'}")
+        if cert_info.get('expires'):
+            lines.append(f"- Expires: {cert_info['expires']}")
+        lines.append(f"- CA trusted: {'yes' if cert_info.get('ca_trusted') else '**no — browser may warn**'}")
+        lines.append("")
+
+    if registry:
+        lines.append("## Registry (from port-registry.json)")
+        lines.append("| Service | HTTP Port | HTTPS Port | Alive |")
+        lines.append("|---------|-----------|------------|-------|")
+        for key, entry in sorted(registry.items()):
+            http = entry.get("http_port", "—")
+            https = entry.get("https_port", 0)
+            https_str = str(https) if https else "—"
+            alive = "✅" if not _stale_pid(entry.get("pid", -1)) else "❌"
+            lines.append(f"| {key} | {http} | {https_str} | {alive} |")
+        lines.append("")
+
+    content = "\n".join(lines) + "\n"
+    _atomic_write_md(diag_path, content)
+
+
+def _cleanup_diagnostics(registry):
+    """Remove diagnostic files for services not in the live registry."""
+    diag_dir = _diagnostics_dir()
+    if not diag_dir.exists():
+        return
+    live_keys = set(registry.keys())
+    for md_file in diag_dir.glob("*.md"):
+        key = md_file.stem
+        if key not in live_keys:
+            # also check PID staleness as a double-check
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                import re as _re
+                pid_match = _re.search(r"PID:\s*(\d+)", content)
+                if pid_match and _stale_pid(int(pid_match.group(1))):
+                    md_file.unlink()
+                    logging.info("Removed stale diagnostic file: %s", md_file.name)
+            except Exception:
+                pass
 
 # --- Initialize ServerConfig and ServerCore ---
 svr_config = ServerConfig()
@@ -397,7 +516,7 @@ if not success:
 # --- FastAPI App Initialization ---
 app = svr_core.FastAPI() # Main FastAPI app for serving content
 redirect_app = svr_core.FastAPI() # Separate FastAPI app for the HTTP redirect
-
+_svr_start_time = time.time() # Record server start time for uptime tracking
 
 # --- Load Site Endpoints (if site_endpoints.py exists) ---
 try:
@@ -1111,6 +1230,12 @@ if __name__ == "__main__":
             if svr_config.SECURE_SITE:
                 svr_core.config.HTTPS_PORT = https_port
 
+            # ── write diagnostics snapshot ───────────────────────────
+            diag_dir = _diagnostics_dir()
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            logging.info("Diagnostics: %s", diag_dir / f"{our_key}.md")
+            write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None)
+
             # ── Manager FastAPI app (HTTP only, on adrest_port) ──────────
             manager_app = svr_core.FastAPI()
 
@@ -1215,6 +1340,11 @@ if __name__ == "__main__":
                         "Registered as '%s' on ports %d/%d",
                         our_key, result["http_port"], result["https_port"]
                     )
+                    # ── write diagnostics snapshot ───────────────────
+                    diag_dir = _diagnostics_dir()
+                    diag_dir.mkdir(parents=True, exist_ok=True)
+                    logging.info("Diagnostics: %s", diag_dir / f"{our_key}.md")
+                    write_diagnostics_snapshot(svr_core, reg, our_key, cert_info=None)
             except urllib.error.HTTPError as e:
                 raise RuntimeError(f"Registration failed: {e.read().decode()}") from e
             except urllib.error.URLError as e:
