@@ -15,7 +15,7 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 # author: Andrew Kingdom, Copyright(C)2025-2026, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
@@ -83,6 +83,7 @@ import ipaddress
 from datetime import datetime, timedelta, timezone
 import subprocess
 from pathlib import Path
+import time
 import logging
 import re
 import json
@@ -353,6 +354,14 @@ class ServerCore:
 
         return success, msg
 
+    # ── timestamp helper ──────────────────────────────────────────────────────
+    @staticmethod
+    def _now_iso() -> str:
+        """Return current UTC timestamp as ISO‑8601 string."""
+        return datetime.now(timezone.utc).isoformat()
+
+    # ── end ServerCore class ───
+
 # ADDED: Function to extract PYKELET metadata from HTML.
 # This needs to be defined at the top-level of start_site_server.py
 # because it's passed as a callable to site_manager.
@@ -442,7 +451,7 @@ def write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None):
 
     lines = []
     lines.append(f"# {our_key} — Service State")
-    lines.append(f"**Reported at:** {_now_iso()}")
+    lines.append(f"**Reported at:** {svr_core._now_iso()}")
     lines.append("")
     lines.append("## Server")
     lines.append(f"- Server Folder: {server_path}")
@@ -852,9 +861,9 @@ class CertificateManager:
         if os.path.exists(cert_path) and os.path.exists(key_path) and not force_regenerate:
             try:
                 existing = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
-                if existing.not_valid_after > datetime.utcnow() + timedelta(days=7):
+                if existing.not_valid_after_utc > datetime.now(timezone.utc) + timedelta(days=7):
                     need_create = False
-                    logging.info("LocalCA: existing leaf cert valid until %s; skipping regen.", existing.not_valid_after.isoformat())
+                    logging.info("LocalCA: existing leaf cert valid until %s; skipping regen.", existing.not_valid_after_utc.isoformat())
             except Exception:
                 logging.warning("LocalCA: existing cert present but failed to parse; regenerating.")
     
@@ -1022,14 +1031,14 @@ async def run_servers(manager_config=None):
 
     if svr_core.config.SECURE_SITE:
         server_configs.append(
-            svr_core.uvicorn_module.Config(redirect_app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
+            svr_core.uvicorn_module.Config(redirect_app, host="127.0.0.1", port=svr_core.config.HTTP_PORT, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
         )
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT, **ssl_params)
+            svr_core.uvicorn_module.Config(app, host="127.0.0.1", port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT, **ssl_params)
         )
     else:
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="0.0.0.0", port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
+            svr_core.uvicorn_module.Config(app, host="127.0.0.1", port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
         )
 
     if manager_config is not None:
@@ -1076,7 +1085,7 @@ if __name__ == "__main__":
     if args.disable_adrest:
         svr_config.ADREST_ENABLED = False
 
-    print("--- start ---")
+    print("\n\n--- START ---\n")
 
     # ── Dynamic port assignment & service‑registry (AdREST) ───────────────
     # Only active when AdREST is enabled AND no explicit ports are given.
@@ -1236,8 +1245,26 @@ if __name__ == "__main__":
             logging.info("Diagnostics: %s", diag_dir / f"{our_key}.md")
             write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None)
 
+            def _release_lock():
+                try:
+                    lock_file.close()
+                except Exception:
+                    pass
+            
+            import atexit
+            atexit.register(_release_lock)
+            
+            # Define the lifespan context manager
+            from contextlib import asynccontextmanager
+            @asynccontextmanager
+            async def lifespan(app: svr_core.FastAPI):
+                yield
+                # Executed on shutdown
+                print(f"\nCommencing graceful shutdown (within {svr_core.config.SHUTDOWN_TIMEOUT} seconds)\n")
+                _release_lock()
+                
             # ── Manager FastAPI app (HTTP only, on adrest_port) ──────────
-            manager_app = svr_core.FastAPI()
+            manager_app = svr_core.FastAPI(lifespan=lifespan)
 
             @manager_app.post("/api/manager/register")
             async def _register_service(request: svr_core.Request):
@@ -1283,23 +1310,12 @@ if __name__ == "__main__":
                 return {"registry": reg}
 
             manager_config = svr_core.uvicorn_module.Config(
-                manager_app, host="127.0.0.1", port=adrest_port, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT
+                manager_app, host="127.0.0.1", port=adrest_port, lifespan="on", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT
             )
+            
             # Keep the lock open for the lifetime of the manager
             app.state.workspace_lock_file = lock_file
-            import atexit
-            def _release_lock():
-                try:
-                    lock_file.close()
-                except Exception:
-                    pass
-            atexit.register(_release_lock)
             
-            @app.on_event("shutdown")
-            async def _shutdown_release_lock():
-                _release_lock()
-                
-                
             logging.info(
                 "AdREST manager active on ports %d (HTTP) / %d (HTTPS), manager HTTP on %d",
                 http_port, https_port, adrest_port
