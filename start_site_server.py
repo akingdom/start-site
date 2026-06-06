@@ -15,10 +15,11 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 # author: Andrew Kingdom, Copyright(C)2025-2026, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
+
 
 # --- EDITABLE SERVER CONFIGURATION ---
 class ServerConfig:
@@ -37,13 +38,13 @@ class ServerConfig:
         # e.g.     "/Users/fred/assets/images",  # absolute
         self.ALLOWED_SYMLINK_TARGETS: list[str] = ['../../js']
         # True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP.
-        self.SECURE_SITE: bool = True
+        self.SECURE_SITE: bool = False
         # Set to True to force regeneration of SSL certificates on startup, even if valid.
         # Set to False (default) to only regenerate if missing or expired.
         self.FORCE_CERTIFICATE_REGENERATION: bool = False
         # Set to True to auto-open the default page in a web browser on server startup
         # Set to False (default) if a web page or app will be opened independent of this script
-        self.AUTO_OPEN_DEFAULT: bool = True
+        self.AUTO_OPEN_DEFAULT: bool = False
         # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
         self.AUTO_OPEN_DELAY_SECONDS: int = 1
         # Enable AdREST dynamic port management. Set to False to run as a standalone server.
@@ -61,6 +62,10 @@ class ServerConfig:
         # Whether to serve static files from SITE_FOLDER.
         # Set to False for a pure API / WebSocket server.
         self.SERVE_STATIC_FILES: bool = True
+        # ── New configuration fields (v1.6.0+) ─────────────────────────
+        # Hide from other devices on your network (recommended = True)
+        # TODO: This needs to be checked and tested whether all loopback references are correct.
+        self.ENABLE_LOOPBACK_ONLY: typing.Final = True
 
         # ── Diagnostics ──────────────────────────────────────────────
         # Enable per‑service Markdown diagnostic snapshots to be written.
@@ -74,30 +79,19 @@ class ServerConfig:
 # --- END EDITABLE SERVER CONFIGURATION ---
 
 
-import os
-import sys
-import importlib
-import asyncio
-import webbrowser
-import ipaddress
 from datetime import datetime, timedelta, timezone
-import subprocess
 from pathlib import Path
-import time
-import logging
-import re
-import json
-import platform
-import socket
 from typing import Dict, Tuple, Any, Optional, Callable # Added for type hinting
-
-import hashlib
+import asyncio, hashlib, importlib, ipaddress, json, logging, os, platform, re, signal, socket, subprocess, sys, time, webbrowser
 
 # --- cryptography imports (modern style) ---
 from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+# Guarantee the lifespan shutdown and lock release run
+signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
 
 # Get the directory where the script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -184,6 +178,11 @@ class ServerCore:
             logging.info(f"Recommended installation command: {pip_install_cmd}")
 
             if _AUTO_INSTALL_CHOICE is None:
+                if not sys.stdin.isatty():
+                    # non‑interactive – print the command and fail gracefully
+                    print(f"❌ Critical dependencies missing: {', '.join(missing_critical_for_install)}")
+                    print(f"   Install them manually: pip install {' '.join(missing_critical_for_install)}")
+                    return False, "Non‑interactive environment – please install missing dependencies manually."
                 while True:
                     try:
                         choice = input(
@@ -357,8 +356,8 @@ class ServerCore:
     # ── timestamp helper ──────────────────────────────────────────────────────
     @staticmethod
     def _now_iso() -> str:
-        """Return current UTC timestamp as ISO‑8601 string."""
-        return datetime.now(timezone.utc).isoformat()
+        """Return current UTC timestamp as ISO‑8601 string with explicit UTC marker."""
+        return datetime.now(timezone.utc).isoformat() + "Z"
 
     # ── end ServerCore class ───
 
@@ -395,8 +394,7 @@ def get_pykelet_metadata(html_content: str) -> Optional[Dict]:
         return pykelet_meta if pykelet_meta else None
     return None # No PYKELET comment found
 
-# ── Diagnostics helpers ────────────────────────────────────────────────────
-
+# ── Path + Diagnostic helpers ────────────────────────────────────────────────
 def _user_data_dir():
     """Return the per‑user data directory for workspace runtime files."""
     if platform.system() == "Windows":
@@ -409,6 +407,44 @@ def _user_data_dir():
                     Path.home() / ".local" / "share"))
     return base / "workspace-server"
 
+def _get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+def _port_is_free(port):
+    """Return True if port can be bound on 127.0.0.1."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", port))
+            return True
+    except OSError:
+        return False
+
+def _check_identity(port, expected_key):
+    import urllib.request
+    import urllib.error
+    try:
+        url = f"http://127.0.0.1:{port}/api/identity"
+        with urllib.request.urlopen(url, timeout=1.0) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("key") == expected_key
+    except Exception:
+        return False
+
+# ── Helper to reuse a port if still free, else allocate a new one ─
+def _reuse_or_allocate_port(registry, key, label="port"):
+    port = None
+    entry = registry.get(key)
+    if entry:
+        candidate = entry.get("http_port")
+        if candidate and _port_is_free(candidate):
+            port = candidate
+            logging.info("Reusing previous %s %d", label, port)
+    if port is None:
+        port = _get_free_port()
+        logging.info("Allocated new %s %d", label, port)
+    return port
 
 def _diagnostics_dir():
     """Return the path to the diagnostics snapshot directory."""
@@ -432,7 +468,6 @@ def _stale_pid(pid: int) -> bool:
         return False
     except (OSError, ProcessLookupError):
         return True
-
 
 def write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None):
     """Write (or update) the Markdown diagnostic file for this service."""
@@ -527,20 +562,14 @@ app = svr_core.FastAPI() # Main FastAPI app for serving content
 redirect_app = svr_core.FastAPI() # Separate FastAPI app for the HTTP redirect
 _svr_start_time = time.time() # Record server start time for uptime tracking
 
-# --- Load Site Endpoints (if site_endpoints.py exists) ---
-try:
-    if os.path.exists("site_endpoints.py"):
-        import site_endpoints
-        site_endpoints.init(app, svr_core)
-        logging.info("site_endpoints are active")
-    else:
-        logging.info("site_endpoints unused (not found)")
-except ImportError as e:
-    logging.warning(f"site_endpoints unused (import error): {e}")
-except Exception as e:
-    logging.error(f"site_endpoints unused (other error): {e}")
-
-
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logging.exception("Unhandled exception")
+    return JSONResponse(
+        status_code=500,
+        content={"message": "Something went wrong. Check the diagnostic snapshot for details."}
+    )
+    
 # 1.0.5 - now correctly handles subfolders
 def secure_filepath(filepath):
     """
@@ -600,6 +629,7 @@ async def add_index_html(request: svr_core.Request, call_next):
                 except svr_core.HTTPException as e:
                     raise e
     return response
+
 
 class SecureStaticFiles(svr_core.StaticFiles):
     def __init__(self, *args, allowed_symlink_targets=None, **kwargs):
@@ -688,6 +718,7 @@ def get_lan_ip():
     except Exception as e:
         logging.warning(f"Error getting IP: {e}")
         return "127.0.0.1"
+
 
 # ── Certificate Manager (encapsulates all certificate activities) ─────────
 class CertificateManager:
@@ -899,15 +930,18 @@ class CertificateManager:
                 san_list.append(x509.IPAddress(ipaddress.IPv6Address("::1")))
             except Exception:
                 pass
-            try:
-                lan_ip = get_lan_ip()
-                if lan_ip and lan_ip not in ("127.0.0.1", "::1", "0.0.0.0"):
-                    if ":" in lan_ip:
-                        san_list.append(x509.IPAddress(ipaddress.IPv6Address(lan_ip)))
-                    else:
-                        san_list.append(x509.IPAddress(ipaddress.IPv4Address(lan_ip)))
-            except Exception:
-                logging.debug("LocalCA: get_lan_ip failed or returned non-IP")
+
+            if not svr_core.config.ENABLE_LOOPBACK_ONLY:
+                try:
+                    lan_ip = get_lan_ip()
+                    if lan_ip and lan_ip not in ("127.0.0.1", "::1", "0.0.0.0"):
+                        if ":" in lan_ip:
+                            san_list.append(x509.IPAddress(ipaddress.IPv6Address(lan_ip)))
+                        else:
+                            san_list.append(x509.IPAddress(ipaddress.IPv4Address(lan_ip)))
+                except Exception:
+                    logging.debug("LocalCA: get_lan_ip failed or returned non-IP")
+
             builder = builder.add_extension(x509.SubjectAlternativeName(san_list), critical=False)
             builder = builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             builder = builder.add_extension(
@@ -963,6 +997,23 @@ if svr_core.config.SECURE_SITE:
             return svr_core.RedirectResponse(url=new_url, status_code=301)
         return await call_next(request)
 
+# --- Load Site Endpoints (if site_endpoints.py exists) ---
+def _load_site_endpoints(app, svr_core):
+    """Load site_endpoints.py after ports have been finalised."""
+    try:
+        if os.path.exists("site_endpoints.py"):
+            import site_endpoints
+            logging.info("site_endpoints initialising on ports http %d / https %d",
+                         svr_core.config.HTTP_PORT,
+                         svr_core.config.HTTPS_PORT)
+            site_endpoints.init(app, svr_core)
+            logging.info("site_endpoints active")
+        else:
+            logging.info("site_endpoints unused (not found)")
+    except ImportError as e:
+        logging.warning("site_endpoints unused (import error): %s", e)
+    except Exception as e:
+        logging.error("site_endpoints unused (other error): %s", e)
 
 def auto_open_default_page():
     try:
@@ -976,7 +1027,7 @@ def auto_open_default_page():
 
 
 async def run_servers(manager_config=None):
-    ip = get_lan_ip()
+    ip = "127.0.0.1" if svr_core.config.ENABLE_LOOPBACK_ONLY else get_lan_ip()
     cert_path, key_path = None, None
     ssl_params = {}
 
@@ -1031,14 +1082,14 @@ async def run_servers(manager_config=None):
 
     if svr_core.config.SECURE_SITE:
         server_configs.append(
-            svr_core.uvicorn_module.Config(redirect_app, host="127.0.0.1", port=svr_core.config.HTTP_PORT, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
+            svr_core.uvicorn_module.Config(redirect_app, host=ip, port=svr_core.config.HTTP_PORT, lifespan="off", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
         )
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="127.0.0.1", port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT, **ssl_params)
+            svr_core.uvicorn_module.Config(app, host=ip, port=svr_core.config.HTTPS_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT, **ssl_params)
         )
     else:
         server_configs.append(
-            svr_core.uvicorn_module.Config(app, host="127.0.0.1", port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
+            svr_core.uvicorn_module.Config(app, host=ip, port=svr_core.config.HTTP_PORT, lifespan=lifespan_mode, timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT)
         )
 
     if manager_config is not None:
@@ -1087,9 +1138,28 @@ if __name__ == "__main__":
 
     print("\n\n--- START ---\n")
 
+    site = Path(svr_core.config.SITE_FOLDER)
+    if not site.is_dir():
+        sys.exit(f"SITE_FOLDER '{site}' does not exist or is not a directory.")
+    
+    # --- Validate symlink targets on startup ---
+    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
+    for target in svr_config.ALLOWED_SYMLINK_TARGETS:
+        allowed_real = os.path.realpath(
+            target if os.path.isabs(target) else os.path.join(site_root, target)
+        )
+        if not os.path.commonpath([site_root, allowed_real]) == site_root:
+            logging.warning("Symlink target %s resolves outside site root (%s) → may be misconfigured.",
+                            target, allowed_real)
+                            
     # ── Dynamic port assignment & service‑registry (AdREST) ───────────────
     # Only active when AdREST is enabled AND no explicit ports are given.
     explicit_ports = (args.port is not None) or (args.https_port is not None)
+
+    # This will be set to a manager config if we become the AdREST manager,
+    # otherwise stays None.  The same asyncio.run(run_servers(…)) call is
+    # used for all paths.
+    manager_config = None
 
     if svr_config.ADREST_ENABLED and not explicit_ports:
         from pathlib import Path
@@ -1108,57 +1178,6 @@ if __name__ == "__main__":
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             def _unlock_file(fh):
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-
-        # ── path helpers ────────────────────────────────────────────────
-        def _user_data_dir():
-            if platform.system() == "Windows":
-                base = Path(os.environ.get("APPDATA",
-                             Path.home() / "AppData" / "Roaming"))
-            elif platform.system() == "Darwin":
-                base = Path.home() / "Library" / "Application Support"
-            else:
-                base = Path(os.environ.get("XDG_DATA_HOME",
-                             Path.home() / ".local" / "share"))
-            return base / "workspace-server"
-
-        def _get_free_port():
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", 0))
-                return s.getsockname()[1]
-
-        def _port_is_free(port):
-            """Return True if port can be bound on 127.0.0.1."""
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("127.0.0.1", port))
-                    return True
-            except OSError:
-                return False
-
-        def _check_identity(port, expected_key):
-            import urllib.request
-            import urllib.error
-            try:
-                url = f"http://127.0.0.1:{port}/api/identity"
-                with urllib.request.urlopen(url, timeout=1.0) as resp:
-                    data = json.loads(resp.read().decode())
-                    return data.get("key") == expected_key
-            except Exception:
-                return False
-
-        # ── Helper to reuse a port if still free, else allocate a new one ─
-        def _reuse_or_allocate_port(registry, key, label="port"):
-            port = None
-            entry = registry.get(key)
-            if entry:
-                candidate = entry.get("http_port")
-                if candidate and _port_is_free(candidate):
-                    port = candidate
-                    logging.info("Reusing previous %s %d", label, port)
-            if port is None:
-                port = _get_free_port()
-                logging.info("Allocated new %s %d", label, port)
-            return port
 
         # ── per‑user registry files ─────────────────────────────────────
         data_dir = _user_data_dir()
@@ -1182,8 +1201,6 @@ if __name__ == "__main__":
         except (IOError, OSError):
             we_are_manager = False
 
-        manager_config = None
-
         if we_are_manager:
             # ── WE ARE THE ADREST MANAGER ────────────────────────────────
             registry = {}
@@ -1203,7 +1220,6 @@ if __name__ == "__main__":
 
             # Reuse or allocate main HTTP/HTTPS ports
             http_port = _reuse_or_allocate_port(registry, our_key, "HTTP port")
-
             if svr_config.SECURE_SITE:
                 # HTTPS port reuse
                 https_port = None
@@ -1239,7 +1255,8 @@ if __name__ == "__main__":
             if svr_config.SECURE_SITE:
                 svr_core.config.HTTPS_PORT = https_port
 
-            # ── write diagnostics snapshot ───────────────────────────
+            _load_site_endpoints(app, svr_core)
+
             diag_dir = _diagnostics_dir()
             diag_dir.mkdir(parents=True, exist_ok=True)
             logging.info("Diagnostics: %s", diag_dir / f"{our_key}.md")
@@ -1254,20 +1271,19 @@ if __name__ == "__main__":
             import atexit
             atexit.register(_release_lock)
             
-            # Define the lifespan context manager
+            # ── lifespan + manager app ─────────────────────────────────
             from contextlib import asynccontextmanager
             @asynccontextmanager
             async def lifespan(app: svr_core.FastAPI):
                 yield
-                # Executed on shutdown
                 print(f"\nCommencing graceful shutdown (within {svr_core.config.SHUTDOWN_TIMEOUT} seconds)\n")
                 _release_lock()
-                
-            # ── Manager FastAPI app (HTTP only, on adrest_port) ──────────
+
             manager_app = svr_core.FastAPI(lifespan=lifespan)
 
             @manager_app.post("/api/manager/register")
             async def _register_service(request: svr_core.Request):
+                # ... unchanged ...
                 body = await request.json()
                 key = body.get("key")
                 if not key:
@@ -1310,12 +1326,11 @@ if __name__ == "__main__":
                 return {"registry": reg}
 
             manager_config = svr_core.uvicorn_module.Config(
-                manager_app, host="127.0.0.1", port=adrest_port, lifespan="on", timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT
+                manager_app, host="127.0.0.1", port=adrest_port, lifespan="on",
+                timeout_graceful_shutdown=svr_core.config.SHUTDOWN_TIMEOUT
             )
-            
-            # Keep the lock open for the lifetime of the manager
             app.state.workspace_lock_file = lock_file
-            
+
             logging.info(
                 "AdREST manager active on ports %d (HTTP) / %d (HTTPS), manager HTTP on %d",
                 http_port, https_port, adrest_port
@@ -1327,7 +1342,6 @@ if __name__ == "__main__":
             import urllib.request
             import urllib.error
 
-            # Discover manager from registry
             reg = {}
             if registry_path.exists():
                 try:
@@ -1352,11 +1366,10 @@ if __name__ == "__main__":
                     result = json.loads(resp.read().decode())
                     svr_core.config.HTTP_PORT = result["http_port"]
                     svr_core.config.HTTPS_PORT = result["https_port"]
-                    logging.info(
-                        "Registered as '%s' on ports %d/%d",
-                        our_key, result["http_port"], result["https_port"]
-                    )
-                    # ── write diagnostics snapshot ───────────────────
+                    logging.info("Registered as '%s' on ports %d/%d", our_key, result["http_port"], result["https_port"])
+
+                    _load_site_endpoints(app, svr_core)
+
                     diag_dir = _diagnostics_dir()
                     diag_dir.mkdir(parents=True, exist_ok=True)
                     logging.info("Diagnostics: %s", diag_dir / f"{our_key}.md")
@@ -1364,31 +1377,20 @@ if __name__ == "__main__":
             except urllib.error.HTTPError as e:
                 raise RuntimeError(f"Registration failed: {e.read().decode()}") from e
             except urllib.error.URLError as e:
-                raise RuntimeError(
-                    f"Cannot contact the AdREST manager on port {manager_port}. "
-                    "Is the first server instance running?"
-                ) from e
+                raise RuntimeError(f"Cannot contact the AdREST manager on port {manager_port}. "
+                                   "Is the first server instance running?") from e
 
-        # Pass manager_config to run_servers (will be None for clients)
-        try:
-            asyncio.run(run_servers(manager_config=manager_config))
-        except KeyboardInterrupt:
-            logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
-            pass
-        except Exception as e:
-            logging.critical(f"An unexpected error occurred during server runtime: {e}")
-            sys.exit(1)
-        finally:
-            logging.info("Application finished.")
     else:
-        # Standalone mode – use configured ports, no AdREST
-        try:
-            asyncio.run(run_servers())
-        except KeyboardInterrupt:
-            logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
-            pass
-        except Exception as e:
-            logging.critical(f"An unexpected error occurred during server runtime: {e}")
-            sys.exit(1)
-        finally:
-            logging.info("Application finished.")
+        # Standalone mode – no AdREST
+        _load_site_endpoints(app, svr_core)
+
+    # ── Common server launch ────────────────────────────────────────────
+    try:
+        asyncio.run(run_servers(manager_config=manager_config))
+    except KeyboardInterrupt:
+        logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
+    except Exception as e:
+        logging.critical(f"An unexpected error occurred during server runtime: {e}")
+        sys.exit(1)
+    finally:
+        logging.info("Application finished.")
