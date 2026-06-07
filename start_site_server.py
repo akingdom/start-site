@@ -25,57 +25,88 @@ is handled by site_manager.py (if present).
 # --- You can simply edit config values here if you prefer fewer files, but it is more work to upgrade.
 
 from dataclasses import dataclass, field
-
+from typing import List
 # --- EDITABLE SERVER CONFIGURATION ---
 @dataclass
 class ServerConfig:
-    VERSION: str = "2.0.3"
-    # Path to external config file (empty = no overrides)
+    # ── Version and external config ─────────────────────────────────────
+    VERSION_note = "Application version (do not change)"
+    VERSION: str = "2.0.4"
+
+    EXTERNAL_CONFIG_PATH_note = "Path to external config file (empty = no overrides)"
     EXTERNAL_CONFIG_PATH: str = "ServerConfig.py"
-    # TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)
+
+    # ── Network ports ──────────────────────────────────────────────────
+    HTTP_PORT_note = "TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)"
     HTTP_PORT: int = 9000
-    # TCP Port for HTTPS traffic
+
+    HTTPS_PORT_note = "TCP Port for HTTPS traffic"
     HTTPS_PORT: int = 9001
-    # Folder containing web-site files. This site folder must be in the same 'parent' folder that contains this start_site.py script.
+
+    # ── Static content ─────────────────────────────────────────────────
+    SITE_FOLDER_note = "Folder containing web-site files. This site folder must be in the same 'parent' folder that contains this start_site.py script."
     SITE_FOLDER: str = 'live'
-    # Name of the preferred file to open when a web client doesn't specify a filename.
+
+    DEFAULT_FILE_note = "Name of the preferred file to open when a web client doesn't specify a filename."
     DEFAULT_FILE: str = 'index.html'
-    # A list of allowed symlink target *directories*.
-    # Each entry may be absolute or relative to the start_site_server.py location.
-    # e.g.     "live/assets",       # relative to SITE_FOLDER
-    # e.g.     "/Users/fred/assets/images",  # absolute
-    ALLOWED_SYMLINK_TARGETS: list[str] = field(default_factory=lambda: [
-        '../../js'
-    ])
-    # True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP.
+
+    ALLOWED_SYMLINK_TARGETS_note = (
+        "A list of allowed symlink target *directories*.\n"
+        "Each entry may be absolute or relative to the start_site_server.py location.\n"
+        "e.g.     \"live/assets\",       # relative to SITE_FOLDER\n"
+        "e.g.     \"/Users/fred/assets/images\",  # absolute"
+    )
+    ALLOWED_SYMLINK_TARGETS: List[str] = field(default_factory=lambda: ['../../js'])
+
+    # ── Security (HTTPS) ───────────────────────────────────────────────
+    SECURE_SITE_note = "True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP."
     SECURE_SITE: bool = False
-    # Set to True to force regeneration of SSL certificates on startup, even if valid.
-    # Set to False (default) to only regenerate if missing or expired.
+
+    FORCE_CERTIFICATE_REGENERATION_note = (
+        "Set to True to force regeneration of SSL certificates on startup, even if valid.\n"
+        "Set to False (default) to only regenerate if missing or expired."
+    )
     FORCE_CERTIFICATE_REGENERATION: bool = False
-    # Set to True to auto-open the default page in a web browser on server startup
-    # Set to False (default) if a web page or app will be opened independent of this script
+
+    # ── User experience ─────────────────────────────────────────────────
+    AUTO_OPEN_DEFAULT_note = (
+        "Set to True to auto-open the default page in a web browser on server startup\n"
+        "Set to False (default) if a web page or app will be opened independent of this script"
+    )
     AUTO_OPEN_DEFAULT: bool = False
-    # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
+
+    AUTO_OPEN_DELAY_SECONDS_note = "Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True."
     AUTO_OPEN_DELAY_SECONDS: int = 1
-    # Enable AdREST dynamic port management. Set to False to run as a standalone server with specific port numbers.
+
+    # ── Port management (AdREST) ───────────────────────────────────────
+    ADREST_ENABLED_note = "Enable AdREST dynamic port management. Set to False to run as a standalone server with specific port numbers."
     ADREST_ENABLED: bool = True
-    # Time in seconds to graciously (safely, politely) shutdown the server when the user presses Control-C on keyboard
+
+    # ── Runtime behaviour ──────────────────────────────────────────────
+    SHUTDOWN_TIMEOUT_note = "Time in seconds to graciously (safely, politely) shutdown the server when the user presses Control-C on keyboard"
     SHUTDOWN_TIMEOUT: int = 5
-    # Enable Uvicorn lifespan events (startup/shutdown). Default off.
+
+    ENABLE_LIFESPAN_note = "Enable Uvicorn lifespan events (startup/shutdown). Default off."
     ENABLE_LIFESPAN: bool = True
-    # Custom SSL certificate and key file paths. If empty, the server
-    # auto‑generates a self‑signed certificate via CertificateManager.
+
+    SSL_CERT_FILE_note = (
+        "Custom SSL certificate and key file paths. If empty, the server\n"
+        "auto‑generates a self‑signed certificate via CertificateManager."
+    )
     SSL_CERT_FILE: str = ''
     SSL_KEY_FILE: str = ''
-    # Whether to serve static files from SITE_FOLDER.
-    # Set to False for a pure API / WebSocket server.
+
+    SERVE_STATIC_FILES_note = "Whether to serve static files from SITE_FOLDER.\nSet to False for a pure API / WebSocket server."
     SERVE_STATIC_FILES: bool = True
-    # Hide from other devices on your network (recommended = True)
-    # TODO: This needs to be checked and tested whether all loopback references are correct.
+
+    ENABLE_LOOPBACK_ONLY_note = "Hide from other devices on your network (recommended = True)"
     ENABLE_LOOPBACK_ONLY: bool = True
-    # Enable per‑service Markdown diagnostic snapshots to be written.
-    # Set to False to disable file‑based diagnostics.
-    # (the /api/diagnostics endpoint remains active regardless).
+
+    DIAGNOSTICS_ENABLED_note = (
+        "Enable per‑service Markdown diagnostic snapshots to be written.\n"
+        "Set to False to disable file‑based diagnostics.\n"
+        "(the /api/diagnostics endpoint remains active regardless)."
+    )
     DIAGNOSTICS_ENABLED: bool = True
 # --- END EDITABLE SERVER CONFIGURATION ---
 
@@ -350,7 +381,7 @@ class ServerConfigLoader:
     def load(cls: Type[ServerConfigT], cli_path: Optional[str] = None, env_var: str = "EDER_CONFIG_PATH") -> ServerConfigT:
         """Create config instance with external overrides."""
         config = ServerConfig()  # internal defaults
-
+    
         # 1. Determine external path (CLI > env > default)
         ext_path = None
         if cli_path:
@@ -359,26 +390,31 @@ class ServerConfigLoader:
             ext_path = os.environ[env_var]
         elif config.EXTERNAL_CONFIG_PATH:
             ext_path = config.EXTERNAL_CONFIG_PATH
-
+    
         if not ext_path:
             return config
-
+    
         # 2. Try to load external file
         path = Path(ext_path).expanduser().resolve()
         if not path.exists():
             print(f"ℹ️  Config override not found: {path}\n   Using internal defaults. Create {path} to customise.")
             return config
-
+    
         try:
             spec = importlib.util.spec_from_file_location("ext_config", path)
             ext_mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(ext_mod)
-
+    
             if not hasattr(ext_mod, "ServerConfig"):
                 print(f"⚠️  No ServerConfig class in {path}")
                 return config
-
+    
             ext_cfg = ext_mod.ServerConfig()
+            # ── Version check ──────────────────────────────────────────────
+            ext_version = getattr(ext_cfg, "VERSION", None)
+            if ext_version is not None and ext_version != ServerConfig.VERSION:
+                print(f"⚠️  External config version {ext_version} does not match script version {ServerConfig.VERSION} – some fields may be outdated.")
+    
             # Override matching fields (skip VERSION and EXTERNAL_CONFIG_PATH)
             from dataclasses import fields
             for f in fields(ServerConfig):
@@ -386,37 +422,48 @@ class ServerConfigLoader:
                     continue
                 if hasattr(ext_cfg, f.name):
                     setattr(config, f.name, getattr(ext_cfg, f.name))
-
+    
             print(f"✅ Loaded overrides from {path}")
         except Exception as e:
             print(f"❌ Error loading {path}: {e}\n   Using internal defaults.")
-
+    
         return config
 
     @classmethod
     def generate_template(cls, output_path: str = "ServerConfig.py") -> None:
-        """Write a clean template file (without internal loader fields)."""
         path = Path(output_path)
         if path.exists():
             bak = path.with_suffix(".py.bak")
             path.rename(bak)
             print(f"Backed up existing config to {bak}")
-
-        with open(path, "w") as f:
-            f.write("# ServerConfig.py – override any field from the internal ServerConfig\n")
-            f.write("from dataclasses import dataclass\n\n")
+    
+        cfg = ServerConfig()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("# ServerConfig.py – override any field by uncommenting the line below its comment.\n")
+            f.write("from dataclasses import dataclass, field\n")
+            f.write("from typing import List\n\n")
             f.write("@dataclass\n")
             f.write("class ServerConfig:\n")
-            # Write only user‑relevant fields (skip EXTERNAL_CONFIG_PATH and VERSION)
-            from dataclasses import fields
-            for fld in fields(ServerConfig):
-                if fld.name in ("EXTERNAL_CONFIG_PATH", "VERSION"):
-                    continue
-                default = fld.default if fld.default != fld.default_factory else None
-                f.write(f"    {fld.name}: {fld.type.__name__} = {repr(default)}\n")
-            f.write("\n    # Add any custom fields below, but keep the class name.\n")
+            for field_name in cfg.__annotations__.keys():
+                # Write the note as comment(s)
+                note = getattr(ServerConfig, f"{field_name}_note", "")
+                if note:
+                    for line in note.split('\n'):
+                        f.write(f"    # {line}\n")
+                # Write the field definition
+                default = getattr(cfg, field_name)
+                type_name = type(default).__name__
+                if type_name == 'list':
+                    type_name = 'List'
+                # Always uncomment VERSION field (needed for version check)
+                if field_name == "VERSION":
+                    f.write(f"    {field_name}: {type_name} = {repr(default)}\n")
+                else:
+                    f.write(f"    # {field_name}: {type_name} = {repr(default)}\n")
+                f.write("\n")
+            f.write("    # Uncomment any other line above to change the value.\n")
         print(f"✅ Generated config template: {path}")
-
+        
     @classmethod
     def version_check(cls, config: ServerConfig, external_version: Optional[str] = None) -> bool:
         """Compare script version with external config version (if present)."""
