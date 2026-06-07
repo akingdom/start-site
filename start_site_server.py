@@ -15,74 +15,77 @@ is handled by site_manager.py (if present).
 - Minimal cryptography dependency handles
 - Certificate management is encapsulated in CertificateManager for easy removal.
 """
-VERSION = "1.7.0"
+# VERSION => see ServerConfig
 # author: Andrew Kingdom, Copyright(C)2025-2026, All rights reserved, MIT License (CC-BY).
 # the connection URL is shown when the script runs successfully.
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
 
 
+# --- RECOMMENDATION: COPY all the following into a new file named 'custom_config.py' in the sane directory as this script. ---
+# --- You can simply edit config values here if you prefer fewer files, but it is more work to upgrade.
+
+from dataclasses import dataclass, field
+
 # --- EDITABLE SERVER CONFIGURATION ---
+@dataclass
 class ServerConfig:
-    def __init__(self):
-        # TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)
-        self.HTTP_PORT: int = 8002
-        # TCP Port for HTTPS traffic
-        self.HTTPS_PORT: int = 8003
-        # Folder containing web-site files. This site folder must be in the same 'parent' folder that contains this start_site.py script.
-        self.SITE_FOLDER: str = 'live'
-        # Name of the preferred file to open when a web client doesn't specify a filename.
-        self.DEFAULT_FILE: str = 'index.html'
-        # A list of allowed symlink target *directories*.
-        # Each entry may be absolute or relative to the start_site_server.py location.
-        # e.g.     "live/assets",       # relative to SITE_FOLDER
-        # e.g.     "/Users/fred/assets/images",  # absolute
-        self.ALLOWED_SYMLINK_TARGETS: list[str] = ['../../js']
-        # True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP.
-        self.SECURE_SITE: bool = False
-        # Set to True to force regeneration of SSL certificates on startup, even if valid.
-        # Set to False (default) to only regenerate if missing or expired.
-        self.FORCE_CERTIFICATE_REGENERATION: bool = False
-        # Set to True to auto-open the default page in a web browser on server startup
-        # Set to False (default) if a web page or app will be opened independent of this script
-        self.AUTO_OPEN_DEFAULT: bool = False
-        # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
-        self.AUTO_OPEN_DELAY_SECONDS: int = 1
-        # Enable AdREST dynamic port management. Set to False to run as a standalone server.
-        self.ADREST_ENABLED: bool = True
-        # Time in seconds to graciously (safely, politely) shutdown the server when the user presses Control-C on keyboard
-        self.SHUTDOWN_TIMEOUT: int = 5
-        
-        # ── New configuration fields (v1.2.0+) ─────────────────────────
-        # Enable Uvicorn lifespan events (startup/shutdown). Default off.
-        self.ENABLE_LIFESPAN: bool = False
-        # Custom SSL certificate and key file paths. If empty, the server
-        # auto‑generates a self‑signed certificate via CertificateManager.
-        self.SSL_CERT_FILE: str = ''
-        self.SSL_KEY_FILE: str = ''
-        # Whether to serve static files from SITE_FOLDER.
-        # Set to False for a pure API / WebSocket server.
-        self.SERVE_STATIC_FILES: bool = True
-        # ── New configuration fields (v1.6.0+) ─────────────────────────
-        # Hide from other devices on your network (recommended = True)
-        # TODO: This needs to be checked and tested whether all loopback references are correct.
-        self.ENABLE_LOOPBACK_ONLY: typing.Final = True
-
-        # ── Diagnostics ──────────────────────────────────────────────
-        # Enable per‑service Markdown diagnostic snapshots to be written.
-        # Set to False to disable file‑based diagnostics.
-        # (the /api/diagnostics endpoint remains active regardless).
-        self.DIAGNOSTICS_ENABLED: bool = True
-
-        # Application version number. Note: Leave this as-is, as it reflects the version above.
-        self.VERSION: str = VERSION
-
+    VERSION: str = "2.0.3"
+    # Path to external config file (empty = no overrides)
+    EXTERNAL_CONFIG_PATH: str = "ServerConfig.py"
+    # TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)
+    HTTP_PORT: int = 9000
+    # TCP Port for HTTPS traffic
+    HTTPS_PORT: int = 9001
+    # Folder containing web-site files. This site folder must be in the same 'parent' folder that contains this start_site.py script.
+    SITE_FOLDER: str = 'live'
+    # Name of the preferred file to open when a web client doesn't specify a filename.
+    DEFAULT_FILE: str = 'index.html'
+    # A list of allowed symlink target *directories*.
+    # Each entry may be absolute or relative to the start_site_server.py location.
+    # e.g.     "live/assets",       # relative to SITE_FOLDER
+    # e.g.     "/Users/fred/assets/images",  # absolute
+    ALLOWED_SYMLINK_TARGETS: list[str] = field(default_factory=lambda: [
+        '../../js'
+    ])
+    # True for HTTPS/SSL traffic with HTTP redirect, else False for plain HTTP.
+    SECURE_SITE: bool = False
+    # Set to True to force regeneration of SSL certificates on startup, even if valid.
+    # Set to False (default) to only regenerate if missing or expired.
+    FORCE_CERTIFICATE_REGENERATION: bool = False
+    # Set to True to auto-open the default page in a web browser on server startup
+    # Set to False (default) if a web page or app will be opened independent of this script
+    AUTO_OPEN_DEFAULT: bool = False
+    # Optional delay (seconds) to avoid racing any already-open clients. Only relevant if AUTO_OPEN_DEFAULT is True.
+    AUTO_OPEN_DELAY_SECONDS: int = 1
+    # Enable AdREST dynamic port management. Set to False to run as a standalone server with specific port numbers.
+    ADREST_ENABLED: bool = True
+    # Time in seconds to graciously (safely, politely) shutdown the server when the user presses Control-C on keyboard
+    SHUTDOWN_TIMEOUT: int = 5
+    # Enable Uvicorn lifespan events (startup/shutdown). Default off.
+    ENABLE_LIFESPAN: bool = True
+    # Custom SSL certificate and key file paths. If empty, the server
+    # auto‑generates a self‑signed certificate via CertificateManager.
+    SSL_CERT_FILE: str = ''
+    SSL_KEY_FILE: str = ''
+    # Whether to serve static files from SITE_FOLDER.
+    # Set to False for a pure API / WebSocket server.
+    SERVE_STATIC_FILES: bool = True
+    # Hide from other devices on your network (recommended = True)
+    # TODO: This needs to be checked and tested whether all loopback references are correct.
+    ENABLE_LOOPBACK_ONLY: bool = True
+    # Enable per‑service Markdown diagnostic snapshots to be written.
+    # Set to False to disable file‑based diagnostics.
+    # (the /api/diagnostics endpoint remains active regardless).
+    DIAGNOSTICS_ENABLED: bool = True
 # --- END EDITABLE SERVER CONFIGURATION ---
+
+# --- END RECOMMENDATION ---
 
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Tuple, Any, Optional, Callable # Added for type hinting
-import asyncio, hashlib, importlib, ipaddress, json, logging, os, platform, re, signal, socket, subprocess, sys, time, webbrowser
+from typing import Dict, Tuple, Any, Optional, Callable, Type, TypeVar
+import asyncio, hashlib, importlib, importlib.util, ipaddress, json, logging, os, platform, re, signal, socket, subprocess, sys, time, webbrowser
 
 # --- cryptography imports (modern style) ---
 from cryptography import x509
@@ -152,14 +155,11 @@ class ServerCore:
             Tuple[bool, str]: (True if all critical dependencies are met, error_message if not).
         """
         global _AUTO_INSTALL_CHOICE
-        
         missing_critical_for_install = []
         missing_optional = []
-        
         for module_name, (pip_name, is_critical) in required_modules.items():
             if module_name in self._imported_modules_cache:
                 continue
-                
             try:
                 mod = importlib.import_module(module_name)
                 self._imported_modules_cache[module_name] = mod
@@ -172,11 +172,9 @@ class ServerCore:
         if missing_critical_for_install:
             if not interactive:
                 return False, f"❌ Missing dependencies: {', '.join(missing_critical_for_install)}. Please install them manually."
-
             pip_install_cmd = "pip install " + " ".join(missing_critical_for_install)
             logging.info(f"Critical dependencies missing: {', '.join(missing_critical_for_install)}")
             logging.info(f"Recommended installation command: {pip_install_cmd}")
-
             if _AUTO_INSTALL_CHOICE is None:
                 if not sys.stdin.isatty():
                     # non‑interactive – print the command and fail gracefully
@@ -185,10 +183,7 @@ class ServerCore:
                     return False, "Non‑interactive environment – please install missing dependencies manually."
                 while True:
                     try:
-                        choice = input(
-                            "Critical dependencies are missing. "
-                            "Do you want to attempt automatic installation? (y/n/q for quit): "
-                        ).lower().strip()
+                        choice = input("Critical dependencies are missing. Do you want to attempt automatic installation? (y/n/q for quit): ").lower().strip()
                     except Exception:
                         # Non-interactive environment: default to not auto-install
                         choice = "n"
@@ -202,23 +197,16 @@ class ServerCore:
                         return False, "User chose to quit due to missing critical dependencies."
                     else:
                         print("Invalid input. Please enter 'y', 'n', or 'q'.")
-
             if _AUTO_INSTALL_CHOICE:
                 logging.info(f"Attempting to install critical dependencies: {' '.join(missing_critical_for_install)}")
                 try:
-                    result = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", *missing_critical_for_install],
-                        capture_output=True, text=True, check=False
-                    )
-                    
+                    result = subprocess.run([sys.executable, "-m", "pip", "install", *missing_critical_for_install], capture_output=True, text=True, check=False)
                     if result.returncode != 0:
                         error_msg = f"Failed to install dependencies: {result.stderr.strip()}"
                         logging.error(error_msg)
                         logging.error("Please install them manually: " + pip_install_cmd)
                         return False, error_msg
-
                     logging.info("Installation attempt finished. Re-checking dependencies...")
-                    
                     # Re-attempt import for newly installed critical modules
                     for module_name, (pip_name, is_critical) in required_modules.items():
                         if is_critical and pip_name in missing_critical_for_install: # Only re-check critical ones that were just installed
@@ -227,7 +215,6 @@ class ServerCore:
                                 self._imported_modules_cache[module_name] = mod
                             except ImportError:
                                 pass # Still missing, will be caught by final_missing_critical check
-
                 except Exception as e:
                     error_msg = f"An unexpected error occurred during installation: {e}"
                     logging.error(error_msg)
@@ -249,11 +236,9 @@ class ServerCore:
             logging.error(error_msg)
             logging.error("The server cannot start. Please install them manually: pip install " + " ".join(final_missing_critical))
             return False, error_msg
-        
         if missing_optional:
             logging.warning(f"⚠️ Optional dependencies are missing: {', '.join(missing_optional)}")
             logging.warning("Some features may be unavailable. Install with: pip install " + " ".join(missing_optional))
-            
         # --- Dynamic attribute assignment ---
         # Attach imported modules to self with safe attribute names for dot-access.
         # e.g., 'numpy' -> self.numpy_module, 'fastapi.responses' -> self.fastapi_responses_module
@@ -270,6 +255,7 @@ class ServerCore:
                 logging.debug(f"Attached module {mod_name} as attribute {attr_name} on ServerCore")
             except Exception as e:
                 logging.debug(f"Could not attach module {mod_name} to ServerCore: {e}")
+                pass
         return True, ""
 
     load_endpoint_modules = _ensure_dependencies  # convenience alias
@@ -303,15 +289,11 @@ class ServerCore:
             _REQUIRED_MODULES["cryptography.x509"] = ("cryptography", True)
             _REQUIRED_MODULES["cryptography.hazmat.primitives"] = ("cryptography", True)
             _REQUIRED_MODULES["cryptography.hazmat.backends"] = ("cryptography", True)
-        
         _REQUIRED_MODULES["netifaces"] = ("netifaces", False) # Netifaces is optional for IP detection
-
-            
         success, msg = self._ensure_dependencies(_REQUIRED_MODULES)
         if success:
             self.uvicorn_module = self._imported_modules_cache["uvicorn"]
             self.fastapi_module = self._imported_modules_cache["fastapi"]
-            
             # Assign the components as they were originally imported
             self.FastAPI = self.fastapi_module.FastAPI
             self.Request = self.fastapi_module.Request
@@ -323,9 +305,7 @@ class ServerCore:
             # ADDED: Make jsonable_encoder available through the fastapi_module as well
             # It's not a class to be stored directly on self, but accessed via module.
             # self.jsonable_encoder = self._imported_modules_cache["fastapi.encoders"].jsonable_encoder # This line is not needed here as it's accessed via `fastapi_module.encoders.jsonable_encoder`
-            
             self.netifaces_module = self._imported_modules_cache.get("netifaces")
-            
             # Correctly assign cryptography components by getting imported module objects
             if self.config.SECURE_SITE:
                 # Ensure all necessary cryptography sub-modules were successfully imported and cached
@@ -361,6 +341,92 @@ class ServerCore:
 
     # ── end ServerCore class ───
 
+# ── ServerConfigLoader ───
+ServerConfigT = TypeVar('ServerConfigT', bound='ServerConfig')
+class ServerConfigLoader:
+    """Pure classmethods for loading and managing config."""
+
+    @classmethod
+    def load(cls: Type[ServerConfigT], cli_path: Optional[str] = None, env_var: str = "EDER_CONFIG_PATH") -> ServerConfigT:
+        """Create config instance with external overrides."""
+        config = ServerConfig()  # internal defaults
+
+        # 1. Determine external path (CLI > env > default)
+        ext_path = None
+        if cli_path:
+            ext_path = cli_path
+        elif env_var in os.environ:
+            ext_path = os.environ[env_var]
+        elif config.EXTERNAL_CONFIG_PATH:
+            ext_path = config.EXTERNAL_CONFIG_PATH
+
+        if not ext_path:
+            return config
+
+        # 2. Try to load external file
+        path = Path(ext_path).expanduser().resolve()
+        if not path.exists():
+            print(f"ℹ️  Config override not found: {path}\n   Using internal defaults. Create {path} to customise.")
+            return config
+
+        try:
+            spec = importlib.util.spec_from_file_location("ext_config", path)
+            ext_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ext_mod)
+
+            if not hasattr(ext_mod, "ServerConfig"):
+                print(f"⚠️  No ServerConfig class in {path}")
+                return config
+
+            ext_cfg = ext_mod.ServerConfig()
+            # Override matching fields (skip VERSION and EXTERNAL_CONFIG_PATH)
+            from dataclasses import fields
+            for f in fields(ServerConfig):
+                if f.name in ("VERSION", "EXTERNAL_CONFIG_PATH"):
+                    continue
+                if hasattr(ext_cfg, f.name):
+                    setattr(config, f.name, getattr(ext_cfg, f.name))
+
+            print(f"✅ Loaded overrides from {path}")
+        except Exception as e:
+            print(f"❌ Error loading {path}: {e}\n   Using internal defaults.")
+
+        return config
+
+    @classmethod
+    def generate_template(cls, output_path: str = "ServerConfig.py") -> None:
+        """Write a clean template file (without internal loader fields)."""
+        path = Path(output_path)
+        if path.exists():
+            bak = path.with_suffix(".py.bak")
+            path.rename(bak)
+            print(f"Backed up existing config to {bak}")
+
+        with open(path, "w") as f:
+            f.write("# ServerConfig.py – override any field from the internal ServerConfig\n")
+            f.write("from dataclasses import dataclass\n\n")
+            f.write("@dataclass\n")
+            f.write("class ServerConfig:\n")
+            # Write only user‑relevant fields (skip EXTERNAL_CONFIG_PATH and VERSION)
+            from dataclasses import fields
+            for fld in fields(ServerConfig):
+                if fld.name in ("EXTERNAL_CONFIG_PATH", "VERSION"):
+                    continue
+                default = fld.default if fld.default != fld.default_factory else None
+                f.write(f"    {fld.name}: {fld.type.__name__} = {repr(default)}\n")
+            f.write("\n    # Add any custom fields below, but keep the class name.\n")
+        print(f"✅ Generated config template: {path}")
+
+    @classmethod
+    def version_check(cls, config: ServerConfig, external_version: Optional[str] = None) -> bool:
+        """Compare script version with external config version (if present)."""
+        if external_version is None:
+            # If we have an external config instance, read its VERSION
+            external_version = getattr(config, "VERSION", "0.0")
+        return external_version == ServerConfig.VERSION
+    # ── end ServerConfigLoader class ───
+
+# --- Helper functions (no globals) ---
 # ADDED: Function to extract PYKELET metadata from HTML.
 # This needs to be defined at the top-level of start_site_server.py
 # because it's passed as a callable to site_manager.
@@ -371,26 +437,22 @@ def get_pykelet_metadata(html_content: str) -> Optional[Dict]:
     Returns a dictionary of metadata (e.g., {"FILENAME": "index.html"}) or None if not found.
     """
     # Regex to find the entire PYKELET comment block
-    # It looks for ''
-    pykelet_comment_pattern = re.compile(r'<!--\s*PYKELET\b(.*?)-->', html_content, re.DOTALL)
+    pykelet_comment_pattern = re.compile(r'<!--\s*PYKELET\b(.*?)-->', re.DOTALL)
     match = pykelet_comment_pattern.search(html_content)
 
     if match:
         # The captured group (.*?) is the content between 'PYKELET' and '-->'
         raw_comment_content = match.group(1)
-        
-        metadata = {}
+        pykelet_meta = {}
         # Split by newlines and process each line
         lines = raw_comment_content.strip().split('\n')
-        
         for line in lines:
             line_parts = line.strip().split(':', 1) # Split only on the first colon
             if len(line_parts) == 2:
                 key = line_parts[0].strip().upper()
                 value = line_parts[1].strip()
                 if key: # Ensure key is not empty
-                    metadata[key] = value
-    
+                    pykelet_meta[key] = value
         return pykelet_meta if pykelet_meta else None
     return None # No PYKELET comment found
 
@@ -398,13 +460,11 @@ def get_pykelet_metadata(html_content: str) -> Optional[Dict]:
 def _user_data_dir():
     """Return the per‑user data directory for workspace runtime files."""
     if platform.system() == "Windows":
-        base = Path(os.environ.get("APPDATA",
-                    Path.home() / "AppData" / "Roaming"))
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     elif platform.system() == "Darwin":
         base = Path.home() / "Library" / "Application Support"
     else:
-        base = Path(os.environ.get("XDG_DATA_HOME",
-                    Path.home() / ".local" / "share"))
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
     return base / "workspace-server"
 
 def _get_free_port():
@@ -422,8 +482,7 @@ def _port_is_free(port):
         return False
 
 def _check_identity(port, expected_key):
-    import urllib.request
-    import urllib.error
+    import urllib.request, urllib.error
     try:
         url = f"http://127.0.0.1:{port}/api/identity"
         with urllib.request.urlopen(url, timeout=1.0) as resp:
@@ -482,32 +541,18 @@ def write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None):
     http_port = svr_core.config.HTTP_PORT
     https_port = svr_core.config.HTTPS_PORT if svr_core.config.SECURE_SITE else 0
     pid = os.getpid()
-    uptime = int(time.time() - _svr_start_time) if '_svr_start_time' in dir() else 0
-
-    lines = []
-    lines.append(f"# {our_key} — Service State")
-    lines.append(f"**Reported at:** {svr_core._now_iso()}")
-    lines.append("")
-    lines.append("## Server")
-    lines.append(f"- Server Folder: {server_path}")
-    lines.append(f"- Status: **running**")
-    lines.append(f"- PID: {pid}")
-    lines.append(f"- Ports: HTTP {http_port}" + (f", HTTPS {https_port}" if https_port else ""))
-    lines.append(f"- Secure site: {'yes' if svr_core.config.SECURE_SITE else 'no'}")
-    lines.append(f"- Uptime: {uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s")
-    lines.append(f"- Python: {sys.version.split()[0]}")
-    lines.append(f"- Platform: {platform.system()}-{platform.release()}")
-    lines.append(f"- Version: {svr_core.config.VERSION}")
-    lines.append("")
-
+    uptime = int(time.time() - _svr_start_time) if '_svr_start_time' in globals() else 0
+    lines = [f"# {our_key} — Service State", f"**Reported at:** {svr_core._now_iso()}", "", "## Server",
+             f"- Server Folder: {server_path}", f"- Status: **running**", f"- PID: {pid}",
+             f"- Ports: HTTP {http_port}" + (f", HTTPS {https_port}" if https_port else ""),
+             f"- Secure site: {'yes' if svr_core.config.SECURE_SITE else 'no'}",
+             f"- Uptime: {uptime // 3600}h {(uptime % 3600) // 60}m {uptime % 60}s",
+             f"- Python: {sys.version.split()[0]}", f"- Platform: {platform.system()}-{platform.release()}",
+             f"- Version: {svr_core.config.VERSION}", ""]
     if cert_info:
-        lines.append("## SSL Certificate")
-        lines.append(f"- Valid: {'yes' if cert_info.get('valid') else '**NO — EXPIRED OR INVALID**'}")
-        if cert_info.get('expires'):
-            lines.append(f"- Expires: {cert_info['expires']}")
-        lines.append(f"- CA trusted: {'yes' if cert_info.get('ca_trusted') else '**no — browser may warn**'}")
-        lines.append("")
-
+        lines.extend(["## SSL Certificate", f"- Valid: {'yes' if cert_info.get('valid') else '**NO — EXPIRED OR INVALID**'}",
+                     f"- Expires: {cert_info['expires']}" if cert_info.get('expires') else "",
+                     f"- CA trusted: {'yes' if cert_info.get('ca_trusted') else '**no — browser may warn**'}", ""])
     if registry:
         lines.append("## Registry (from port-registry.json)")
         lines.append("| Service | HTTP Port | HTTPS Port | Alive |")
@@ -519,10 +564,8 @@ def write_diagnostics_snapshot(svr_core, registry, our_key, cert_info=None):
             alive = "✅" if not _stale_pid(entry.get("pid", -1)) else "❌"
             lines.append(f"| {key} | {http} | {https_str} | {alive} |")
         lines.append("")
-
     content = "\n".join(lines) + "\n"
     _atomic_write_md(diag_path, content)
-
 
 def _cleanup_diagnostics(registry):
     """Remove diagnostic files for services not in the live registry."""
@@ -536,162 +579,19 @@ def _cleanup_diagnostics(registry):
             # also check PID staleness as a double-check
             try:
                 content = md_file.read_text(encoding="utf-8")
-                import re as _re
-                pid_match = _re.search(r"PID:\s*(\d+)", content)
+                pid_match = re.search(r"PID:\s*(\d+)", content)
                 if pid_match and _stale_pid(int(pid_match.group(1))):
                     md_file.unlink()
                     logging.info("Removed stale diagnostic file: %s", md_file.name)
             except Exception:
                 pass
 
-# --- Initialize ServerConfig and ServerCore ---
-svr_config = ServerConfig()
-svr_core = ServerCore(svr_config)
-
-# --- Run initial dependency check for start_site_server ---
-success, message = svr_core.ensure_server_core_dependencies()
-
-if not success:
-    print(f"\nFATAL ERROR: {message}")
-    print("\nPlease resolve the dependency issues to run the server.")
-    sys.exit(1)
-
-
-# --- FastAPI App Initialization ---
-app = svr_core.FastAPI() # Main FastAPI app for serving content
-redirect_app = svr_core.FastAPI() # Separate FastAPI app for the HTTP redirect
-_svr_start_time = time.time() # Record server start time for uptime tracking
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    logging.exception("Unhandled exception")
-    return JSONResponse(
-        status_code=500,
-        content={"message": "Something went wrong. Check the diagnostic snapshot for details."}
-    )
-    
-# 1.0.5 - now correctly handles subfolders
-def secure_filepath(filepath):
-    """
-    Checks if a filepath is within SITE_FOLDER or a whitelisted symlink target.
-    """
-
-    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
-    real = os.path.realpath(filepath)
-
-    # Print mapping the first time only
-    if not hasattr(secure_filepath, "_printed"):
-        print("\n--- Symlink whitelist resolution ---")
-        print("SITE ROOT:", site_root)
-        for target in svr_config.ALLOWED_SYMLINK_TARGETS:
-            allowed_real = os.path.realpath(
-                target if os.path.isabs(target)
-                else os.path.join(site_root, target)
-            )
-            print(f"  ALLOWED: {target}  →  {allowed_real}")
-        secure_filepath._printed = True
-        print("\n")
-
-    # 1. Allow anything inside live/ directly
-    if real == site_root or real.startswith(site_root + os.sep):
-        return real
-
-    # 2. Check whitelisted symlink target dirs
-    for allowed in svr_config.ALLOWED_SYMLINK_TARGETS:
-        allowed_real = os.path.realpath(
-            allowed if os.path.isabs(allowed)
-            else os.path.join(site_root, allowed)
-        )
-
-        if real == allowed_real or real.startswith(allowed_real + os.sep):
-            return real
-
-    # 3. Reject everything else
-    print("SECURITY BLOCKED PATH:")
-    print("  site root:", site_root)
-    print("  real path:", real)
-    raise svr_core.HTTPException(403, "Forbidden symlink target")
-
-
-
-@app.middleware("http")
-async def add_index_html(request: svr_core.Request, call_next):
-    response = await call_next(request)
-    if response.status_code == 404:
-        path = request.url.path.lstrip("/")
-        full_path = os.path.join(svr_core.config.SITE_FOLDER, path)
-        if os.path.isdir(full_path):
-            index_path = os.path.join(full_path, svr_core.config.DEFAULT_FILE)
-            if os.path.exists(index_path):
-                try:
-                    secure_filepath(index_path) #Security check
-                    return svr_core.FileResponse(index_path)
-                except svr_core.HTTPException as e:
-                    raise e
-    return response
-
-
-class SecureStaticFiles(svr_core.StaticFiles):
-    def __init__(self, *args, allowed_symlink_targets=None, **kwargs):
-        self.allowed_symlink_targets = allowed_symlink_targets or []
-        super().__init__(*args, **kwargs)
-
-    async def get_response(self, path: str, scope):
-        joined = os.path.join(self.directory, path)
-        real_path = os.path.realpath(joined)
-
-        # Security check
-        site_root = os.path.realpath(self.directory)
-        secure_filepath(real_path)  # raises 403 if not allowed
-
-        # If file is outside the site root, serve it manually
-        is_inside_site_root = real_path.startswith(site_root + os.sep)
-
-        if not is_inside_site_root:
-            # Manual file serving for symlink targets
-            if not os.path.exists(real_path):
-                print(real_path)
-                raise svr_core.HTTPException(404, "File not found")
-            resp = svr_core.FileResponse(real_path)
-        else:
-            # Normal StaticFiles behaviour
-            resp = await super().get_response(path, scope)
-
-        # --- GZIP / BROTLI handling ---
-        if path.endswith(".gz"):
-            resp.headers["Content-Encoding"] = "gzip"
-            resp.headers.pop("content-length", None)
-            if path.endswith(".js.gz"):
-                resp.headers["Content-Type"] = "application/javascript"
-            elif path.endswith(".css.gz"):
-                resp.headers["Content-Type"] = "text/css"
-            else:
-                import mimetypes
-                base, _ = os.path.splitext(path)
-                mime, _ = mimetypes.guess_type(base)
-                if mime:
-                    resp.headers["Content-Type"] = mime
-
-        elif path.endswith(".br"):
-            resp.headers["Content-Encoding"] = "br"
-            resp.headers.pop("content-length", None)
-            if path.endswith(".js.br"):
-                resp.headers["Content-Type"] = "application/javascript"
-            elif path.endswith(".css.br"):
-                resp.headers["Content-Type"] = "text/css"
-            else:
-                import mimetypes
-                base, _ = os.path.splitext(path)
-                mime, _ = mimetypes.guess_type(base)
-                if mime:
-                    resp.headers["Content-Type"] = mime
-
-        return resp
-
-
 def get_lan_ip():
     """Gets the LAN IP address using netifaces or falls back to socket."""
-    if svr_core.netifaces_module: # Use svr_core's reference
+    # This function is used inside CertificateManager, which runs after svr_core is set.
+    # We use the global svr_core (set in __main__ after init).
+    global svr_core
+    if svr_core and svr_core.netifaces_module:
         try:
             for interface in svr_core.netifaces_module.interfaces():
                 addresses = svr_core.netifaces_module.ifaddresses(interface)
@@ -745,8 +645,8 @@ class CertificateManager:
             not_after_str = cert.get("notAfter")
             if not not_after_str:
                 return False
-            not_after = datetime.datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
-            return datetime.datetime.utcnow() < not_after
+            not_after = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
+            return datetime.utcnow() < not_after
         except Exception:
             return False
 
@@ -766,10 +666,7 @@ class CertificateManager:
         Returns True if a cert with the given CN and identical digest exists.
         """
         try:
-            out = subprocess.check_output(
-                ["security", "find-certificate", "-c", common_name, "-p", "/Library/Keychains/System.keychain"],
-                stderr=subprocess.STDOUT
-            )
+            out = subprocess.check_output(["security", "find-certificate", "-c", common_name, "-p", "/Library/Keychains/System.keychain"], stderr=subprocess.STDOUT)
             sys_fp = hashlib.sha256(out).hexdigest()
             return sys_fp == local_fp
         except subprocess.CalledProcessError:
@@ -810,16 +707,13 @@ class CertificateManager:
         Returns (cert_path_str, key_path_str)
         """
         global _CERT_TRUST_CHECK_DONE_THIS_SESSION
-    
         cert_path = str(cert_path)
         key_path = str(key_path)
-    
         # --- CA storage paths ---
         ca_base = Path.home() / ".localdev" / "ca"
         ca_key_path = ca_base / "ca.key.pem"
         ca_cert_path = ca_base / "ca.cert.pem"
         ca_base.mkdir(parents=True, exist_ok=True)
-
         def _write_pem(path: Path, data: bytes, mode: int = 0o600):
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "wb") as f:
@@ -828,7 +722,6 @@ class CertificateManager:
                 os.chmod(path, mode)
             except Exception:
                 pass
-    
         # Create CA if missing (persistent, long-lived)
         def _create_ca_if_missing(force: bool = False):
             if ca_key_path.exists() and ca_cert_path.exists() and not force:
@@ -841,44 +734,12 @@ class CertificateManager:
                 x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Local Development"),
             ])
             now = datetime.utcnow()
-            ca_cert = (
-                x509.CertificateBuilder()
-                .subject_name(subject)
-                .issuer_name(issuer)
-                .public_key(ca_key.public_key())
-                .serial_number(x509.random_serial_number())
-                .not_valid_before(now - timedelta(days=1))
-                .not_valid_after(now + timedelta(days=3650))
-                .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
-                .add_extension(
-                    x509.KeyUsage(
-                        digital_signature=False,
-                        key_encipherment=False,
-                        content_commitment=False,
-                        data_encipherment=False,
-                        key_agreement=False,
-                        key_cert_sign=True,
-                        crl_sign=True,
-                        encipher_only=False,
-                        decipher_only=False,
-                    ),
-                    critical=True
-                )
-                .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
-                .sign(ca_key, hashes.SHA256())
-            )
-    
-            _write_pem(ca_key_path, ca_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
+            ca_cert = (x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(ca_key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=3650)).add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True).add_extension(x509.KeyUsage(digital_signature=False, key_encipherment=False, content_commitment=False, data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False), critical=True).add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False).sign(ca_key, hashes.SHA256()))
+            _write_pem(ca_key_path, ca_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.TraditionalOpenSSL, encryption_algorithm=serialization.NoEncryption()))
             _write_pem(ca_cert_path, ca_cert.public_bytes(serialization.Encoding.PEM))
             logging.info("LocalCA: Root CA created at %s", ca_cert_path)
-    
         # Ensure CA exists
         _create_ca_if_missing()
-    
         # Attempt to install CA once per session (fingerprint-aware helper)
         if not _CERT_TRUST_CHECK_DONE_THIS_SESSION:
             try:
@@ -886,7 +747,6 @@ class CertificateManager:
             except Exception as e:
                 logging.warning("LocalCA: CA install failed or requires manual import: %s", e)
             _CERT_TRUST_CHECK_DONE_THIS_SESSION = True
-    
         # --- Decide whether to (re)create the leaf cert ---
         need_create = True
         if os.path.exists(cert_path) and os.path.exists(key_path) and not force_regenerate:
@@ -897,32 +757,17 @@ class CertificateManager:
                     logging.info("LocalCA: existing leaf cert valid until %s; skipping regen.", existing.not_valid_after_utc.isoformat())
             except Exception:
                 logging.warning("LocalCA: existing cert present but failed to parse; regenerating.")
-    
         if need_create:
             logging.info("LocalCA: Creating new leaf certificate signed by local CA...")
-    
             # Load CA key and cert
             ca_key = serialization.load_pem_private_key(ca_key_path.read_bytes(), password=None)
             ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
-    
             # Create leaf key
             leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    
             # Subject for leaf
-            subject = x509.Name([
-                x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
-            ])
+            subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
             now = datetime.utcnow()
-            builder = (
-                x509.CertificateBuilder()
-                .subject_name(subject)
-                .issuer_name(ca_cert.subject)
-                .public_key(leaf_key.public_key())
-                .serial_number(x509.random_serial_number())
-                .not_valid_before(now - timedelta(days=1))
-                .not_valid_after(now + timedelta(days=365))
-            )
-    
+            builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(ca_cert.subject).public_key(leaf_key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=365)))
             # SANs
             san_list = [x509.DNSName("localhost")]
             try:
@@ -941,45 +786,23 @@ class CertificateManager:
                             san_list.append(x509.IPAddress(ipaddress.IPv4Address(lan_ip)))
                 except Exception:
                     logging.debug("LocalCA: get_lan_ip failed or returned non-IP")
-
+                    pass
             builder = builder.add_extension(x509.SubjectAlternativeName(san_list), critical=False)
             builder = builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            builder = builder.add_extension(
-                x509.KeyUsage(
-                    digital_signature=True,
-                    key_encipherment=True,
-                    content_commitment=False,
-                    data_encipherment=False,
-                    key_agreement=False,
-                    key_cert_sign=False,
-                    crl_sign=False,
-                    encipher_only=False,
-                    decipher_only=False
-                ),
-                critical=True
-            )
+            builder = builder.add_extension(x509.KeyUsage(digital_signature=True, key_encipherment=True, content_commitment=False, data_encipherment=False, key_agreement=False, key_cert_sign=False, crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
             builder = builder.add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             builder = builder.add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
             try:
-                builder = builder.add_extension(
-                    x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),
-                    critical=False
-                )
+                builder = builder.add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()), critical=False)
             except Exception:
                 try:
                     ca_ski = ca_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest
-                    builder = builder.add_extension(
-                        x509.AuthorityKeyIdentifier(key_identifier=ca_ski, authority_cert_issuer=None, authority_cert_serial_number=None),
-                        critical=False
-                    )
+                    builder = builder.add_extension(x509.AuthorityKeyIdentifier(key_identifier=ca_ski, authority_cert_issuer=None, authority_cert_serial_number=None), critical=False)
                 except Exception:
                     logging.debug("LocalCA: Could not add AKI; continuing without explicit AKI.")
+                    pass
             cert = builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
-            _write_pem(Path(key_path), leaf_key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.PKCS8,
-                encryption_algorithm=serialization.NoEncryption()
-            ))
+            _write_pem(Path(key_path), leaf_key.private_bytes(encoding=serialization.Encoding.PEM, format=serialization.PrivateFormat.PKCS8, encryption_algorithm=serialization.NoEncryption()))
             _write_pem(Path(cert_path), cert.public_bytes(serialization.Encoding.PEM))
             logging.info("LocalCA: Wrote signed leaf cert %s and key %s", cert_path, key_path)
         else:
@@ -988,25 +811,102 @@ class CertificateManager:
         return cert_path, key_path
 
 
-# HTTP Redirect Logic (only if SECURE_SITE is True)
-if svr_core.config.SECURE_SITE:
-    @redirect_app.middleware("http")
-    async def redirect_to_https(request: svr_core.Request, call_next):
-        if request.url.scheme == "http":
-            new_url = request.url.replace(scheme="https", port=svr_core.config.HTTPS_PORT)
-            return svr_core.RedirectResponse(url=new_url, status_code=301)
-        return await call_next(request)
+# --- Global variables (will be set in __main__ after config loading) ---
+app = None
+redirect_app = None
+_svr_start_time = None
+svr_core = None
 
-# --- Load Site Endpoints (if site_endpoints.py exists) ---
-def _load_site_endpoints(app, svr_core):
+# --- Path security function (uses svr_core.config) ---
+def secure_filepath(filepath):
+    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
+    real = os.path.realpath(filepath)
+    if not hasattr(secure_filepath, "_printed"):
+        print("\n--- Symlink whitelist resolution ---")
+        print("SITE ROOT:", site_root)
+        for target in svr_core.config.ALLOWED_SYMLINK_TARGETS:
+            allowed_real = os.path.realpath(
+                target if os.path.isabs(target)
+                else os.path.join(site_root, target)
+            )
+            print(f"  ALLOWED: {target}  →  {allowed_real}")
+        secure_filepath._printed = True
+        print("\n")
+    # 1. Allow anything inside live/ directly
+    if real == site_root or real.startswith(site_root + os.sep):
+        return real
+    # 2. Check whitelisted symlink target dirs
+    for allowed in svr_core.config.ALLOWED_SYMLINK_TARGETS:
+        allowed_real = os.path.realpath(
+            allowed if os.path.isabs(allowed)
+            else os.path.join(site_root, allowed)
+        )
+        if real == allowed_real or real.startswith(allowed_real + os.sep):
+            return real
+    # 3. Reject everything else
+    print("SECURITY BLOCKED PATH:")
+    print("  site root:", site_root)
+    print("  real path:", real)
+    raise svr_core.HTTPException(403, "Forbidden symlink target")
+
+
+# --- Initialization function that depends on svr_core ---
+# Create FastAPI apps, routes, middleware, and security helpers after config is loaded."""
+def init_server(core: ServerCore):
+    global app, redirect_app, _svr_start_time, svr_core
+    svr_core = core
+    # svr_core is already set by the caller before calling this function.
+    # We assign it here for completeness, but the caller already set the global.
+    _svr_start_time = time.time()
+    app = core.FastAPI()
+    redirect_app = core.FastAPI()
+
+    # Exception handler
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):
+        logging.exception("Unhandled exception")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={"message": "Something went wrong. Check the diagnostic snapshot for details."}
+        )
+
+    # Middleware
+    @app.middleware("http")
+    async def add_index_html(request: svr_core.Request, call_next):
+        response = await call_next(request)
+        if response.status_code == 404:
+            path = request.url.path.lstrip("/")
+            full_path = os.path.join(svr_core.config.SITE_FOLDER, path)
+            if os.path.isdir(full_path):
+                index_path = os.path.join(full_path, svr_core.config.DEFAULT_FILE)
+                if os.path.exists(index_path):
+                    try:
+                        secure_filepath(index_path)  # Security check
+                        return svr_core.FileResponse(index_path)
+                    except svr_core.HTTPException as e:
+                        raise e
+        return response
+
+    # HTTP Redirect logic (only if SECURE_SITE is True)
+    if svr_core.config.SECURE_SITE:
+        @redirect_app.middleware("http")
+        async def redirect_to_https(request: svr_core.Request, call_next):
+            if request.url.scheme == "http":
+                new_url = request.url.replace(scheme="https", port=svr_core.config.HTTPS_PORT)
+                return svr_core.RedirectResponse(url=new_url, status_code=301)
+            return await call_next(request)
+
+# --- Functions that use global svr_core and app (defined after init_server) ---
+def _load_site_endpoints(app_instance, core):
     """Load site_endpoints.py after ports have been finalised."""
     try:
         if os.path.exists("site_endpoints.py"):
             import site_endpoints
             logging.info("site_endpoints initialising on ports http %d / https %d",
-                         svr_core.config.HTTP_PORT,
-                         svr_core.config.HTTPS_PORT)
-            site_endpoints.init(app, svr_core)
+                         core.config.HTTP_PORT,
+                         core.config.HTTPS_PORT)
+            site_endpoints.init(app_instance, core)
             logging.info("site_endpoints active")
         else:
             logging.info("site_endpoints unused (not found)")
@@ -1025,15 +925,66 @@ def auto_open_default_page():
     except Exception as e:
         logging.warning(f"Auto-open failed: {e}")
 
-
 async def run_servers(manager_config=None):
     ip = "127.0.0.1" if svr_core.config.ENABLE_LOOPBACK_ONLY else get_lan_ip()
     cert_path, key_path = None, None
     ssl_params = {}
 
-    # Conditional static file mount (move from top-level)
+    # ── Define SecureStaticFiles (local to this function) ──
+    class SecureStaticFiles(svr_core.StaticFiles):
+        def __init__(self, *args, allowed_symlink_targets=None, **kwargs):
+            self.allowed_symlink_targets = allowed_symlink_targets or []
+            super().__init__(*args, **kwargs)
+
+        async def get_response(self, path: str, scope):
+            joined = os.path.join(self.directory, path)
+            real_path = os.path.realpath(joined)
+            site_root = os.path.realpath(self.directory)
+            secure_filepath(real_path)  # uses the global secure_filepath defined in init_server
+            is_inside_site_root = real_path.startswith(site_root + os.sep)
+            if not is_inside_site_root:
+                if not os.path.exists(real_path):
+                    raise svr_core.HTTPException(404, "File not found")
+                resp = svr_core.FileResponse(real_path)
+            else:
+                resp = await super().get_response(path, scope)
+
+            # GZIP / BROTLI handling (unchanged)
+            if path.endswith(".gz"):
+                resp.headers["Content-Encoding"] = "gzip"
+                resp.headers.pop("content-length", None)
+                if path.endswith(".js.gz"):
+                    resp.headers["Content-Type"] = "application/javascript"
+                elif path.endswith(".css.gz"):
+                    resp.headers["Content-Type"] = "text/css"
+                else:
+                    import mimetypes
+                    base, _ = os.path.splitext(path)
+                    mime, _ = mimetypes.guess_type(base)
+                    if mime:
+                        resp.headers["Content-Type"] = mime
+            elif path.endswith(".br"):
+                resp.headers["Content-Encoding"] = "br"
+                resp.headers.pop("content-length", None)
+                if path.endswith(".js.br"):
+                    resp.headers["Content-Type"] = "application/javascript"
+                elif path.endswith(".css.br"):
+                    resp.headers["Content-Type"] = "text/css"
+                else:
+                    import mimetypes
+                    base, _ = os.path.splitext(path)
+                    mime, _ = mimetypes.guess_type(base)
+                    if mime:
+                        resp.headers["Content-Type"] = mime
+            return resp
+
+    # ── Mount static files (after routes have been added) ──
     if svr_core.config.SERVE_STATIC_FILES:
-        app.mount("/", SecureStaticFiles(directory=svr_core.config.SITE_FOLDER, html=False, allowed_symlink_targets=svr_config.ALLOWED_SYMLINK_TARGETS), name="static")
+        app.mount("/", SecureStaticFiles(
+            directory=svr_core.config.SITE_FOLDER,
+            html=False,
+            allowed_symlink_targets=svr_core.config.ALLOWED_SYMLINK_TARGETS
+        ), name="static")
 
     if svr_core.config.SECURE_SITE:
         # Use custom certificate files if provided, otherwise generate via CertificateManager
@@ -1062,7 +1013,6 @@ async def run_servers(manager_config=None):
               f" Connect to 'http://{ip}:{svr_core.config.HTTP_PORT}'\n"
               f" (ver {svr_core.config.VERSION})")
 
-
     print("=== FastAPI routes ===")
     for route in app.routes:
         if hasattr(route, "endpoint"):
@@ -1077,7 +1027,6 @@ async def run_servers(manager_config=None):
             print(f"{route.path:<20} ↪ [unknown route type]")
 
     server_configs = []
-
     lifespan_mode = "on" if svr_core.config.ENABLE_LIFESPAN else "off"
 
     if svr_core.config.SECURE_SITE:
@@ -1106,6 +1055,7 @@ async def run_servers(manager_config=None):
     await asyncio.gather(*[server.serve() for server in servers])
 
 
+# --- Main entry point ---
 if __name__ == "__main__":
     import argparse
 
@@ -1117,10 +1067,21 @@ if __name__ == "__main__":
     parser.add_argument("--auto-open", action="store_true", help="Auto-open the default page on startup.")
     parser.add_argument("--open-delay", type=int, default=None, help="Seconds to delay before auto-opening.")
     parser.add_argument("--disable-adrest", action="store_true", help="Disable AdREST dynamic port management for this run.")
+    parser.add_argument("--config", help="Path to external config file")
+    parser.add_argument("--write-config", action="store_true", help="Create an external config file and exit")
 
     args = parser.parse_args()
 
-    # Apply command line overrides
+    if args.write_config:
+        ServerConfigLoader.generate_template()
+        sys.exit(0)
+
+    # 1. Load config with external overrides
+    svr_config = ServerConfigLoader.load(cli_path=args.config)
+    if not ServerConfigLoader.version_check(svr_config):
+        print("⚠️  External config version mismatch – some fields may be outdated.")
+
+    # 2. Apply CLI overrides (these override even the external config)
     if args.port is not None:
         svr_config.HTTP_PORT = args.port
     if args.https_port is not None:
@@ -1136,35 +1097,37 @@ if __name__ == "__main__":
     if args.disable_adrest:
         svr_config.ADREST_ENABLED = False
 
-    print("\n\n--- START ---\n")
+    # 3. Create ServerCore and check dependencies
+    svr_core_handover = ServerCore(svr_config)
+    success, message = svr_core_handover.ensure_server_core_dependencies()
+    if not success:
+        print(f"\nFATAL ERROR: {message}")
+        sys.exit(1)
 
+    # 4. Handover to global svr_core and initialize FastAPI apps
+    svr_core = svr_core_handover          # assign global
+    svr_core_handover = None              # release temporary reference
+    init_server(svr_core)                # creates app, redirect_app, middleware, etc.
+
+    # 5. Validate site folder
     site = Path(svr_core.config.SITE_FOLDER)
     if not site.is_dir():
         sys.exit(f"SITE_FOLDER '{site}' does not exist or is not a directory.")
-    
-    # --- Validate symlink targets on startup ---
-    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
-    for target in svr_config.ALLOWED_SYMLINK_TARGETS:
-        allowed_real = os.path.realpath(
-            target if os.path.isabs(target) else os.path.join(site_root, target)
-        )
-        if not os.path.commonpath([site_root, allowed_real]) == site_root:
-            logging.warning("Symlink target %s resolves outside site root (%s) → may be misconfigured.",
-                            target, allowed_real)
-                            
-    # ── Dynamic port assignment & service‑registry (AdREST) ───────────────
-    # Only active when AdREST is enabled AND no explicit ports are given.
-    explicit_ports = (args.port is not None) or (args.https_port is not None)
 
-    # This will be set to a manager config if we become the AdREST manager,
-    # otherwise stays None.  The same asyncio.run(run_servers(…)) call is
-    # used for all paths.
+    # Validate symlink targets
+    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
+    for target in svr_core.config.ALLOWED_SYMLINK_TARGETS:
+        allowed_real = os.path.realpath(target if os.path.isabs(target) else os.path.join(site_root, target))
+        # Check if allowed_real is inside site_root (basic security)
+        # (No commonpath check needed because secure_filepath will block later; just warn)
+        if not os.path.commonpath([site_root, allowed_real]) == site_root:
+            logging.warning("Symlink target %s resolves outside site root (%s) → may be misconfigured.", target, allowed_real)
+
+    # 6. AdREST dynamic port assignment (if enabled) – unchanged from your original
+    explicit_ports = (args.port is not None) or (args.https_port is not None)
     manager_config = None
 
     if svr_config.ADREST_ENABLED and not explicit_ports:
-        from pathlib import Path
-        from datetime import datetime, timezone
-
         # ── cross‑platform file locking ─────────────────────────────────
         if platform.system() == "Windows":
             import msvcrt
@@ -1283,7 +1246,6 @@ if __name__ == "__main__":
 
             @manager_app.post("/api/manager/register")
             async def _register_service(request: svr_core.Request):
-                # ... unchanged ...
                 body = await request.json()
                 key = body.get("key")
                 if not key:
@@ -1384,7 +1346,7 @@ if __name__ == "__main__":
         # Standalone mode – no AdREST
         _load_site_endpoints(app, svr_core)
 
-    # ── Common server launch ────────────────────────────────────────────
+    # 7. Run the server
     try:
         asyncio.run(run_servers(manager_config=manager_config))
     except KeyboardInterrupt:
