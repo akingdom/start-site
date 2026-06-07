@@ -226,24 +226,6 @@ def init(app, svr_core):
 
 The file is optional – if it doesn’t exist, the server runs without extra endpoints.
 
-### Site Agents
-
-The server supports different backend agents (e.g., `browser_agent` for pure web, `tauri_agent` for native integration).  
-The agent is selected via the environment variable `EDER_SITE_AGENT` (default: `browser_agent`).  
-Agents are automatically discovered from the `site_agents/` folder and registered using a decorator:
-
-```python
-from site_agents.base import register_agent
-
-@register_agent("my_agent")
-class MySiteAgent:
-    async def create_window(self, payload):
-        # …
-```
-
-The loader finds the concrete class via the registry, avoiding naming conflicts.  
-You can add your own agent by placing a Python file in `site_agents/` and registering it.
-
 ---
 
 ## Launching a registered service
