@@ -31,7 +31,7 @@ from typing import List
 class ServerConfig:
     # ── Version and external config ─────────────────────────────────────
     VERSION_note = "Application version (do not change)"
-    VERSION: str = "2.0.4"
+    VERSION: str = "2.0.5"
 
     EXTERNAL_CONFIG_PATH_note = "Path to external config file (empty = no overrides)"
     EXTERNAL_CONFIG_PATH: str = "ServerConfig.py"
@@ -124,8 +124,21 @@ from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-# Guarantee the lifespan shutdown and lock release run
-signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+# --- Signal handling for graceful shutdown ---
+#     Guarantee the lifespan shutdown and lock release run
+_should_exit = False
+def _shutdown_handler(signum, frame):
+    global _should_exit
+    if _should_exit:
+        # Already shutting down – force exit
+        sys.exit(1)
+    _should_exit = True
+    print("Received shutdown signal, cancelling all tasks...")
+    # Cancel all asyncio tasks (will stop the server)
+    for task in asyncio.all_tasks():
+        task.cancel()
+signal.signal(signal.SIGTERM, _shutdown_handler)
+signal.signal(signal.SIGINT, _shutdown_handler)   # also handle Ctrl+C gracefully
 
 # Get the directory where the script is located
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1396,6 +1409,8 @@ if __name__ == "__main__":
     # 7. Run the server
     try:
         asyncio.run(run_servers(manager_config=manager_config))
+    except asyncio.CancelledError:
+        logging.info("Server cancelled due to termination signal (SIGTERM).")
     except KeyboardInterrupt:
         logging.info("Server manually stopped via Ctrl+C. Exiting gracefully.")
     except Exception as e:
@@ -1403,3 +1418,4 @@ if __name__ == "__main__":
         sys.exit(1)
     finally:
         logging.info("Application finished.")
+        pass
