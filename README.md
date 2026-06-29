@@ -48,7 +48,7 @@ It serves a static folder, optionally over HTTPS, and can run multiple independe
 
 ## Configuration (without editing the script)
 
-To keep `start_site_server.py` completely **immutable** (easy to upgrade), use the external YAML configuration file `site_config.yaml`.
+To keep `start_site_server.py` easy to upgrade (by being completely **immutable**), use the external YAML configuration file `site_config.yaml`.
 
 1. **Generate a default configuration** (if missing):  
    ```bash
@@ -70,6 +70,8 @@ To keep `start_site_server.py` completely **immutable** (easy to upgrade), use t
 
 3. **Run the server** – YAML values automatically override the internal defaults.  
    If the YAML file’s `VERSION` differs from the script’s version, you’ll see a warning (the server still runs, but some fields may be outdated).
+
+`site_config.py` can be omitted. Only `start_site_server.py` is needed to run the server.
 
 ### Internal defaults (inside `start_site_server.py`)
 
