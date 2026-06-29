@@ -21,8 +21,8 @@ is handled by site_manager.py (if present).
 # Future: We could detect failed HTTPS cert by fetching a file from HTTP and checking failure error (CORS, Cert, etc) and display user instructions accordingly.
 
 
-# --- RECOMMENDATION: COPY all the following into a new file named 'custom_config.py' in the sane directory as this script. ---
-# --- You can simply edit config values here if you prefer fewer files, but it is more work to upgrade.
+# --- RECOMMENDATION: use site_config.py to create/update site_config.yaml ---
+# --- Edit site_config.yaml to customise; start_site_server.py will load it. ---
 
 from dataclasses import dataclass, field
 from typing import List
@@ -31,10 +31,7 @@ from typing import List
 class ServerConfig:
     # ── Version and external config ─────────────────────────────────────
     VERSION_note = "Application version (do not change)"
-    VERSION: str = "2.0.5"
-
-    EXTERNAL_CONFIG_PATH_note = "Path to external config file (empty = no overrides)"
-    EXTERNAL_CONFIG_PATH: str = "ServerConfig.py"
+    VERSION: str = "2.1.1"                 # CHANGED: version bumped
 
     # ── Network ports ──────────────────────────────────────────────────
     HTTP_PORT_note = "TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)"
@@ -113,10 +110,26 @@ class ServerConfig:
 # --- END RECOMMENDATION ---
 
 
+from dataclasses import dataclass, field, fields, asdict
+from typing import List, Optional, Any, Dict, Tuple, Callable, Type, TypeVar
 from datetime import datetime, timedelta, timezone
+import asyncio
+import hashlib
+import importlib
+import importlib.util
+import ipaddress
+import json
+import logging
+import os
+import platform
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+import webbrowser
 from pathlib import Path
-from typing import Dict, Tuple, Any, Optional, Callable, Type, TypeVar
-import asyncio, hashlib, importlib, importlib.util, ipaddress, json, logging, os, platform, re, signal, socket, subprocess, sys, time, webbrowser
 
 # --- cryptography imports (modern style) ---
 from cryptography import x509
@@ -246,7 +259,7 @@ class ServerCore:
                 try:
                     result = subprocess.run([sys.executable, "-m", "pip", "install", *missing_critical_for_install], capture_output=True, text=True, check=False)
                     if result.returncode != 0:
-                        error_msg = f"Failed to install dependencies: {result.stderr.strip()}"
+                        error_msg = f"❌  Failed to install dependencies: {result.stderr.strip()}"
                         logging.error(error_msg)
                         logging.error("Please install them manually: " + pip_install_cmd)
                         return False, error_msg
@@ -260,12 +273,12 @@ class ServerCore:
                             except ImportError:
                                 pass # Still missing, will be caught by final_missing_critical check
                 except Exception as e:
-                    error_msg = f"An unexpected error occurred during installation: {e}"
+                    error_msg = f"❌  An unexpected error occurred during installation: {e}"
                     logging.error(error_msg)
                     logging.error("Please install dependencies manually: " + pip_install_cmd)
                     return False, error_msg
             else:
-                error_msg = "User chose not to automatically install critical dependencies."
+                error_msg = "❌  User chose not to automatically install critical dependencies."
                 logging.error(error_msg)
                 logging.error("Please install them manually: " + pip_install_cmd)
                 return False, error_msg
@@ -371,7 +384,7 @@ class ServerCore:
                 else:
                     # If any sub-module failed to load, mark all as None and report an issue
                     # This case should ideally be caught by _ensure_dependencies, but as a safeguard.
-                    logging.error("Not all required cryptography sub-modules could be imported, even after initial checks.")
+                    logging.error("❌  Not all required cryptography sub-modules could be imported, even after initial checks.")
                     success = False
                     msg = "Incomplete cryptography setup."
 
@@ -385,106 +398,21 @@ class ServerCore:
 
     # ── end ServerCore class ───
 
-# ── ServerConfigLoader ───
-ServerConfigT = TypeVar('ServerConfigT', bound='ServerConfig')
-class ServerConfigLoader:
-    """Pure classmethods for loading and managing config."""
 
-    @classmethod
-    def load(cls: Type[ServerConfigT], cli_path: Optional[str] = None, env_var: str = "EDER_CONFIG_PATH") -> ServerConfigT:
-        """Create config instance with external overrides."""
-        config = ServerConfig()  # internal defaults
-    
-        # 1. Determine external path (CLI > env > default)
-        ext_path = None
-        if cli_path:
-            ext_path = cli_path
-        elif env_var in os.environ:
-            ext_path = os.environ[env_var]
-        elif config.EXTERNAL_CONFIG_PATH:
-            ext_path = config.EXTERNAL_CONFIG_PATH
-    
-        if not ext_path:
-            return config
-    
-        # 2. Try to load external file
-        path = Path(ext_path).expanduser().resolve()
-        if not path.exists():
-            print(f"ℹ️  Config override not found: {path}\n   Using internal defaults. Create {path} to customise.")
-            return config
-    
-        try:
-            spec = importlib.util.spec_from_file_location("ext_config", path)
-            ext_mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(ext_mod)
-    
-            if not hasattr(ext_mod, "ServerConfig"):
-                print(f"⚠️  No ServerConfig class in {path}")
-                return config
-    
-            ext_cfg = ext_mod.ServerConfig()
-            # ── Version check ──────────────────────────────────────────────
-            ext_version = getattr(ext_cfg, "VERSION", None)
-            if ext_version is not None and ext_version != ServerConfig.VERSION:
-                print(f"⚠️  External config version {ext_version} does not match script version {ServerConfig.VERSION} – some fields may be outdated.")
-    
-            # Override matching fields (skip VERSION and EXTERNAL_CONFIG_PATH)
-            from dataclasses import fields
-            for f in fields(ServerConfig):
-                if f.name in ("VERSION", "EXTERNAL_CONFIG_PATH"):
-                    continue
-                if hasattr(ext_cfg, f.name):
-                    setattr(config, f.name, getattr(ext_cfg, f.name))
-    
-            print(f"✅ Loaded overrides from {path}")
-        except Exception as e:
-            print(f"❌ Error loading {path}: {e}\n   Using internal defaults.")
-    
-        return config
+# --- Helper: dict with notes from dataclass ---   # CHANGED: added
+def _asdict_with_notes(cls_or_inst) -> Dict[str, Any]:
+    """Convert a dataclass instance or class to a dict including its _note fields."""
+    if isinstance(cls_or_inst, type):
+        inst = cls_or_inst()
+    else:
+        inst = cls_or_inst
+    d = asdict(inst)
+    for f in fields(inst):
+        note_key = f.name + "_note"
+        if hasattr(inst.__class__, note_key):
+            d[note_key] = getattr(inst.__class__, note_key)
+    return d
 
-    @classmethod
-    def generate_template(cls, output_path: str = "ServerConfig.py") -> None:
-        path = Path(output_path)
-        if path.exists():
-            bak = path.with_suffix(".py.bak")
-            path.rename(bak)
-            print(f"Backed up existing config to {bak}")
-    
-        cfg = ServerConfig()
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("# ServerConfig.py – override any field by uncommenting the line below its comment.\n")
-            f.write("from dataclasses import dataclass, field\n")
-            f.write("from typing import List\n\n")
-            f.write("@dataclass\n")
-            f.write("class ServerConfig:\n")
-            for field_name in cfg.__annotations__.keys():
-                # Write the note as comment(s)
-                note = getattr(ServerConfig, f"{field_name}_note", "")
-                if note:
-                    for line in note.split('\n'):
-                        f.write(f"    # {line}\n")
-                # Write the field definition
-                default = getattr(cfg, field_name)
-                type_name = type(default).__name__
-                if type_name == 'list':
-                    type_name = 'List'
-                # Always uncomment VERSION field (needed for version check)
-                if field_name == "VERSION":
-                    f.write(f"    {field_name}: {type_name} = {repr(default)}\n")
-                else:
-                    f.write(f"    # {field_name}: {type_name} = {repr(default)}\n")
-                f.write("\n")
-            f.write("    # Uncomment any other line above to change the value.\n")
-        print(f"✅ Generated config template: {path}")
-        
-    @classmethod
-    def version_check(cls, config: ServerConfig, external_version: Optional[str] = None) -> bool:
-        """Compare script version with external config version (if present)."""
-        if external_version is None:
-            # If we have an external config instance, read its VERSION
-            external_version = getattr(config, "VERSION", "0.0")
-        return external_version == ServerConfig.VERSION
-    # ── end ServerConfigLoader class ───
 
 # --- Helper functions (no globals) ---
 # ADDED: Function to extract PYKELET metadata from HTML.
@@ -666,7 +594,7 @@ def get_lan_ip():
                         if not ip.startswith('fe80') and ip != '::1':
                             return ip
         except Exception as e:
-            logging.warning(f"Error using netifaces: {e}")
+            logging.warning(f"⚠️ Error using netifaces: {e}")
 
     try:
         # Fallback to socket if netifaces fails or is not installed
@@ -676,7 +604,7 @@ def get_lan_ip():
         s.close()
         return ip
     except Exception as e:
-        logging.warning(f"Error getting IP: {e}")
+        logging.warning(f"⚠️ Error getting IP: {e}")
         return "127.0.0.1"
 
 
@@ -805,7 +733,7 @@ class CertificateManager:
             try:
                 cls.install_certificate_if_needed(ca_cert_path, common_name="Local Dev CA")
             except Exception as e:
-                logging.warning("LocalCA: CA install failed or requires manual import: %s", e)
+                logging.warning("⚠️ LocalCA: CA install failed or requires manual import: %s", e)
             _CERT_TRUST_CHECK_DONE_THIS_SESSION = True
         # --- Decide whether to (re)create the leaf cert ---
         need_create = True
@@ -816,7 +744,7 @@ class CertificateManager:
                     need_create = False
                     logging.info("LocalCA: existing leaf cert valid until %s; skipping regen.", existing.not_valid_after_utc.isoformat())
             except Exception:
-                logging.warning("LocalCA: existing cert present but failed to parse; regenerating.")
+                logging.warning("⚠️ LocalCA: existing cert present but failed to parse; regenerating.")
         if need_create:
             logging.info("LocalCA: Creating new leaf certificate signed by local CA...")
             # Load CA key and cert
@@ -867,7 +795,7 @@ class CertificateManager:
             logging.info("LocalCA: Wrote signed leaf cert %s and key %s", cert_path, key_path)
         else:
             logging.info("LocalCA: Using existing certificate: %s", cert_path)
-        logging.warning("If your browser still warns, import the CA root (%s) manually into the System keychain and mark as trusted.", ca_cert_path)
+        logging.warning("⚠️ If your browser still warns, import the CA root (%s) manually into the System keychain and mark as trusted.", ca_cert_path)
         return cert_path, key_path
 
 
@@ -959,21 +887,34 @@ def init_server(core: ServerCore):
 
 # --- Functions that use global svr_core and app (defined after init_server) ---
 def _load_site_endpoints(app_instance, core):
-    """Load site_endpoints.py after ports have been finalised."""
+    """Load site_endpoints.py after ports have been finalised.
+       Uses core.merged_config (if present) to build an EndpointsConfig.
+    """
     try:
         if os.path.exists("site_endpoints.py"):
             import site_endpoints
             logging.info("site_endpoints initialising on ports http %d / https %d",
                          core.config.HTTP_PORT,
                          core.config.HTTPS_PORT)
-            site_endpoints.init(app_instance, core)
+            # If we have a merged config, try to build EndpointsConfig
+            if hasattr(core, 'merged_config') and core.merged_config:
+                # Extract fields that belong to EndpointsConfig
+                endpoint_fields = {f.name for f in fields(site_endpoints.EndpointsConfig)}
+                endpoint_dict = {k: v for k, v in core.merged_config.items() if k in endpoint_fields}
+                if endpoint_dict:
+                    endpoint_config = site_endpoints.EndpointsConfig(**endpoint_dict)
+                    site_endpoints.init(app_instance, core, endpoint_config=endpoint_config)
+                else:
+                    site_endpoints.init(app_instance, core)
+            else:
+                site_endpoints.init(app_instance, core)
             logging.info("site_endpoints active")
         else:
             logging.info("site_endpoints unused (not found)")
     except ImportError as e:
-        logging.warning("site_endpoints unused (import error): %s", e)
+        logging.warning("⚠️ site_endpoints unused (import error): %s", e)
     except Exception as e:
-        logging.error("site_endpoints unused (other error): %s", e)
+        logging.error("❌  site_endpoints unused (other error): %s", e)
 
 def auto_open_default_page():
     try:
@@ -983,7 +924,7 @@ def auto_open_default_page():
         logging.info(f"[server] Auto-opening {url}")
         webbrowser.open(url)
     except Exception as e:
-        logging.warning(f"Auto-open failed: {e}")
+        logging.warning(f"⚠️ Auto-open failed: {e}")
 
 async def run_servers(manager_config=None):
     ip = "127.0.0.1" if svr_core.config.ENABLE_LOOPBACK_ONLY else get_lan_ip()
@@ -1127,47 +1068,115 @@ if __name__ == "__main__":
     parser.add_argument("--auto-open", action="store_true", help="Auto-open the default page on startup.")
     parser.add_argument("--open-delay", type=int, default=None, help="Seconds to delay before auto-opening.")
     parser.add_argument("--disable-adrest", action="store_true", help="Disable AdREST dynamic port management for this run.")
-    parser.add_argument("--config", help="Path to external config file")
-    parser.add_argument("--write-config", action="store_true", help="Create an external config file and exit")
+    parser.add_argument("--config", help="Path to external config file")  # DEPRECATED – kept for backward compatibility
 
     args = parser.parse_args()
 
-    if args.write_config:
-        ServerConfigLoader.generate_template()
-        sys.exit(0)
+    logging.warning("️❤️️  Starting ─── ")
 
-    # 1. Load config with external overrides
-    svr_config = ServerConfigLoader.load(cli_path=args.config)
-    if not ServerConfigLoader.version_check(svr_config):
-        print("⚠️  External config version mismatch – some fields may be outdated.")
+    # 1. Load default ServerConfig dict with notes
+    server_dict = _asdict_with_notes(ServerConfig)
 
-    # 2. Apply CLI overrides (these override even the external config)
-    if args.port is not None:
-        svr_config.HTTP_PORT = args.port
-    if args.https_port is not None:
-        svr_config.HTTPS_PORT = args.https_port
-    if args.secure is not None:
-        svr_config.SECURE_SITE = args.secure.lower() == 'true'
-    if args.force_cert_regen:
-        svr_config.FORCE_CERTIFICATE_REGENERATION = True
-    if args.auto_open:
-        svr_config.AUTO_OPEN_DEFAULT = True
-    if args.open_delay is not None:
-        svr_config.AUTO_OPEN_DELAY_SECONDS = args.open_delay
-    if args.disable_adrest:
-        svr_config.ADREST_ENABLED = False
-
-    # 3. Create ServerCore and check dependencies
+    # 2. Load dependencies first (so we can import site_endpoints safely)
+    svr_config = ServerConfig()  # temporary, will be replaced later
     svr_core_handover = ServerCore(svr_config)
     success, message = svr_core_handover.ensure_server_core_dependencies()
     if not success:
         print(f"\nFATAL ERROR: {message}")
         sys.exit(1)
 
-    # 4. Handover to global svr_core and initialize FastAPI apps
-    svr_core = svr_core_handover          # assign global
-    svr_core_handover = None              # release temporary reference
-    init_server(svr_core)                # creates app, redirect_app, middleware, etc.
+    # 3. Load EndpointsConfig if site_endpoints exists
+    endpoints_dict = None
+    try:
+        import site_endpoints
+        if hasattr(site_endpoints, 'EndpointsConfig'):
+            endpoints_dict = _asdict_with_notes(site_endpoints.EndpointsConfig)
+    except ImportError:
+        logging.info("site_endpoints.py not found; skipping endpoint config.")
+    except Exception as e:
+        logging.warning("⚠️  Failed to import site_endpoints for config: %s", e)
+
+    # 4. Merge: endpoints overrides server
+    merged_dict = server_dict.copy()
+    if endpoints_dict:
+        for k, v in endpoints_dict.items():
+            merged_dict[k] = v
+
+    # 5. Apply YAML overrides from site_config.yaml (if site_config.py exists)
+    yaml_loaded = False
+    try:
+        import site_config
+        if hasattr(site_config, 'load_config'):
+            yaml_overrides = site_config.load_config()
+            if yaml_overrides:
+                # Check version parity
+                yaml_version = yaml_overrides.get('VERSION')
+                if yaml_version and yaml_version != ServerConfig.VERSION:
+                    print(f"⚠️  External config version {yaml_version} does not match script version {ServerConfig.VERSION} – some fields may be outdated.")
+                for k, v in yaml_overrides.items():
+                    merged_dict[k] = v
+                logging.info("Applied overrides from site_config.yaml")
+                yaml_loaded = True
+    except ImportError:
+        logging.info("site_config.py not found; no YAML overrides.")
+    except Exception as e:
+        logging.warning("⚠️ Error loading site_config: %s", e)
+    # If no YAML config was loaded, suggest creating one
+    if not yaml_loaded and not Path("site_config.yaml").exists():
+        print("\n💡 No site_config.yaml found. To customise settings, create one with:")
+        print("   python site_config.py --create")
+        print("   Then edit site_config.yaml to your preferences.\n")
+
+    # 6. Apply CLI overrides
+    if args.port is not None:
+        merged_dict['HTTP_PORT'] = args.port
+    if args.https_port is not None:
+        merged_dict['HTTPS_PORT'] = args.https_port
+    if args.secure is not None:
+        merged_dict['SECURE_SITE'] = args.secure.lower() == 'true'
+    if args.force_cert_regen:
+        merged_dict['FORCE_CERTIFICATE_REGENERATION'] = True
+    if args.auto_open:
+        merged_dict['AUTO_OPEN_DEFAULT'] = True
+    if args.open_delay is not None:
+        merged_dict['AUTO_OPEN_DELAY_SECONDS'] = args.open_delay
+    if args.disable_adrest:
+        merged_dict['ADREST_ENABLED'] = False
+
+    # 7. Construct final ServerConfig
+    server_fields = {f.name for f in fields(ServerConfig)}
+    server_final = {}
+    for k, v in merged_dict.items():
+        if k in server_fields:
+            server_final[k] = v
+    final_server_config = ServerConfig(**server_final)
+
+    # 8. Handover to global svr_core and init server
+    svr_core = ServerCore(final_server_config)
+    # Carry over loaded modules from the temporary core
+    svr_core._imported_modules_cache = svr_core_handover._imported_modules_cache
+    svr_core.uvicorn_module = svr_core_handover.uvicorn_module
+    svr_core.fastapi_module = svr_core_handover.fastapi_module
+    svr_core.FastAPI = svr_core_handover.FastAPI
+    svr_core.Request = svr_core_handover.Request
+    svr_core.HTTPException = svr_core_handover.HTTPException
+    svr_core.FileResponse = svr_core_handover.FileResponse
+    svr_core.RedirectResponse = svr_core_handover.RedirectResponse
+    svr_core.StaticFiles = svr_core_handover.StaticFiles
+    svr_core.APIRouter = svr_core_handover.APIRouter
+    svr_core.netifaces_module = svr_core_handover.netifaces_module
+    if hasattr(svr_core_handover, 'cryptography_x509'):
+        svr_core.cryptography_x509 = svr_core_handover.cryptography_x509
+        svr_core.cryptography_NameOID = svr_core_handover.cryptography_NameOID
+        svr_core.cryptography_hashes = svr_core_handover.cryptography_hashes
+        svr_core.cryptography_serialization = svr_core_handover.cryptography_serialization
+        svr_core.cryptography_rsa = svr_core_handover.cryptography_rsa
+        svr_core.cryptography_default_backend = svr_core_handover.cryptography_default_backend
+
+    # Store merged config for later use by _load_site_endpoints
+    svr_core.merged_config = merged_dict
+
+    init_server(svr_core)
 
     # 5. Validate site folder
     site = Path(svr_core.config.SITE_FOLDER)
@@ -1181,7 +1190,7 @@ if __name__ == "__main__":
         # Check if allowed_real is inside site_root (basic security)
         # (No commonpath check needed because secure_filepath will block later; just warn)
         if not os.path.commonpath([site_root, allowed_real]) == site_root:
-            logging.warning("Symlink target %s resolves outside site root (%s) → may be misconfigured.", target, allowed_real)
+            logging.warning("⚠️ Symlink target %s resolves outside site root (%s) → may be misconfigured.", target, allowed_real)
 
     # 6. AdREST dynamic port assignment (if enabled) – unchanged from your original
     explicit_ports = (args.port is not None) or (args.https_port is not None)
