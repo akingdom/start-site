@@ -5,6 +5,16 @@
 #     site_endpoints.init(app, svr_core)
 # Keep the signature: def init(app: FastAPI, svr_core) -> None:
 
+from dataclasses import dataclass, field
+from typing import Optional, List
+
+@dataclass
+class EndpointsConfig:
+    # ── Directories ──────────────────────────────────────────────────────
+    GREETING_note = "Sample config item for Endpoints."
+    GREETING: str = "Hello"
+
+
 # Declare numpy dependency - this is preferred over 'import xxx' in this particular file.
 REQUIRED_ENDPOINT_MODULES = {
     "numpy": ("numpy", True),
