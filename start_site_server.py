@@ -31,7 +31,7 @@ from typing import List
 class ServerConfig:
     # ── Version and external config ─────────────────────────────────────
     VERSION_note = "Application version (do not change)"
-    VERSION: str = "2.2.1"                 # CHANGED: version bumped (reverted to #8e21763)
+    VERSION: str = "2.3.2"                 # CHANGED: version bumped
 
     # ── Network ports ──────────────────────────────────────────────────
     HTTP_PORT_note = "TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)"
@@ -146,7 +146,9 @@ def _shutdown_handler(signum, frame):
         # Already shutting down – force exit
         sys.exit(1)
     _should_exit = True
-    print("Received shutdown signal, cancelling all tasks...")
+    if svr_core is not None:
+        svr_core._should_exit = True
+    pt_print("Received shutdown signal, cancelling all tasks...")
     # Cancel all asyncio tasks (will stop the server)
     for task in asyncio.all_tasks():
         task.cancel()
@@ -159,7 +161,9 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 # Change the current working directory to the script's directory
 os.chdir(script_dir)
 
-# Configure logging
+# Prompt‑toolkit‑safe logging handler
+def pt_print(*args, **kwargs):
+    print(*args, **kwargs)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Shared Session-Level State ---
@@ -169,6 +173,15 @@ _AUTO_INSTALL_CHOICE: Optional[bool] = None # None: not asked, True: auto-instal
 # Global flag to track if certificate trust store check has been performed this session
 _CERT_TRUST_CHECK_DONE_THIS_SESSION = False
 
+# --- Interactive command registry ---
+_command_registry = {}
+
+def register_command(name: str, func: Callable, help_text: str = ""):
+    """Register a command that can be called from the interactive console."""
+    _command_registry[name] = (func, help_text)
+
+def get_command(name: str):
+    return _command_registry.get(name)
 
 # --- Server Core and Dependency Management ---
 # The goal of ServerCore here is primarily to:
@@ -199,6 +212,19 @@ class ServerCore:
         self.RedirectResponse: Optional[Callable] = None
         self.StaticFiles: Optional[Callable] = None
         self.APIRouter: Optional[Callable] = None # ADDED: For site_manager to use APIRouter from FastAPI
+
+        self._command_registry: Dict[str, Tuple[Callable, str]] = {}
+        self._should_exit = False
+
+    def register_command(self, name: str, func: Callable, help_text: str = ""):
+        """Register a command. Warn if name already exists; do not override."""
+        if name in self._command_registry:
+            pt_print(f"⚠️ Command '{name}' already registered. Ignoring new registration.")
+            return
+        self._command_registry[name] = (func, help_text)
+
+    def get_command(self, name: str) -> Optional[Tuple[Callable, str]]:
+        return self._command_registry.get(name)
 
     def _ensure_dependencies(self, required_modules: Dict[str, Tuple[str, bool]], interactive: bool = True) -> Tuple[bool, str]:
         """
@@ -235,10 +261,13 @@ class ServerCore:
             if _AUTO_INSTALL_CHOICE is None:
                 if not sys.stdin.isatty():
                     # non‑interactive – print the command and fail gracefully
-                    print(f"❌ Critical dependencies missing: {', '.join(missing_critical_for_install)}")
-                    print(f"   Install them manually: pip install {' '.join(missing_critical_for_install)}")
+                    pt_print(f"❌ Critical dependencies missing: {', '.join(missing_critical_for_install)}")
+                    pt_print(f"   Install them manually: pip install {' '.join(missing_critical_for_install)}")
                     return False, "Non‑interactive environment – please install missing dependencies manually."
                 while True:
+                    if svr_core._should_exit:
+                        pt_print("Shutdown requested — exiting.")
+                        break
                     try:
                         choice = input("Critical dependencies are missing. Do you want to attempt automatic installation? (y/n/q for quit): ").lower().strip()
                     except Exception:
@@ -253,7 +282,7 @@ class ServerCore:
                     elif choice == 'q':
                         return False, "User chose to quit due to missing critical dependencies."
                     else:
-                        print("Invalid input. Please enter 'y', 'n', or 'q'.")
+                        pt_print("Invalid input. Please enter 'y', 'n', or 'q'.")
             if _AUTO_INSTALL_CHOICE:
                 logging.info(f"Attempting to install critical dependencies: {' '.join(missing_critical_for_install)}")
                 try:
@@ -339,6 +368,7 @@ class ServerCore:
             "fastapi.staticfiles": ("fastapi", True), # Ensures fastapi is installed for staticfiles
             "fastapi.routing": ("fastapi", True), # ADDED: Explicitly check for APIRouter parent module
             "fastapi.encoders": ("fastapi", True), # ADDED: Ensure fastapi is installed for jsonable_encoder
+            "prompt_toolkit": ("prompt_toolkit", True),
         }
         if self.config.SECURE_SITE:
             # Only import the directly loadable sub-modules for cryptography
@@ -673,15 +703,15 @@ class CertificateManager:
         local_fp = cls._cert_fingerprint(ca_cert_path)
 
         if cls.system_has_cert_with_fingerprint(common_name, local_fp):
-            print("✓ CA certificate already trusted in system keychain — skipping install.")
+            pt_print("✓ CA certificate already trusted in system keychain — skipping install.")
             return
 
-        print("→ Installing CA certificate into system trust store (will prompt for sudo)...")
+        pt_print("→ Installing CA certificate into system trust store (will prompt for sudo)...")
         subprocess.check_call([
             "sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
             "-k", "/Library/Keychains/System.keychain", str(ca_cert_path)
         ])
-        print("✓ CA certificate installed and trusted.")
+        pt_print("✓ CA certificate installed and trusted.")
 
     @classmethod
     def generate_self_signed_cert(cls, cert_path="cert.pem", key_path="key.pem", force_regenerate: bool = False):
@@ -804,22 +834,24 @@ app = None
 redirect_app = None
 _svr_start_time = None
 svr_core = None
+servers = []
+prompt_session = None
 
 # --- Path security function (uses svr_core.config) ---
 def secure_filepath(filepath):
     site_root = os.path.abspath(svr_core.config.SITE_FOLDER)
     real = os.path.realpath(filepath)
     if not hasattr(secure_filepath, "_printed"):
-        print("\n--- Symlink whitelist resolution ---")
-        print("SITE ROOT:", site_root)
+        pt_print("\n--- Symlink whitelist resolution ---")
+        pt_print("SITE ROOT:", site_root)
         for target in svr_core.config.ALLOWED_SYMLINK_TARGETS:
             allowed_real = os.path.realpath(
                 target if os.path.isabs(target)
                 else os.path.join(site_root, target)
             )
-            print(f"  ALLOWED: {target}  →  {allowed_real}")
+            pt_print(f"  ALLOWED: {target}  →  {allowed_real}")
         secure_filepath._printed = True
-        print("\n")
+        pt_print("\n")
     # 1. Allow anything inside live/ directly
     if real == site_root or real.startswith(site_root + os.sep):
         return real
@@ -832,9 +864,9 @@ def secure_filepath(filepath):
         if real == allowed_real or real.startswith(allowed_real + os.sep):
             return real
     # 3. Reject everything else
-    print("SECURITY BLOCKED PATH:")
-    print("  site root:", site_root)
-    print("  real path:", real)
+    pt_print("SECURITY BLOCKED PATH:")
+    pt_print("  site root:", site_root)
+    pt_print("  real path:", real)
     raise svr_core.HTTPException(403, "Forbidden symlink target")
 
 
@@ -920,7 +952,26 @@ def auto_open_default_page():
     except Exception as e:
         logging.warning(f"⚠️ Auto-open failed: {e}")
 
+def request_shutdown():
+    global _should_exit, prompt_session, servers
+    _should_exit = True
+    if svr_core is not None:
+        svr_core._should_exit = True
+
+    # Only exit prompt if it's still running
+    if prompt_session is not None:
+        try:
+            app = prompt_session.app
+            if app and app.is_running:
+                app.exit()
+        except Exception:
+            pass  # Application already closed
+
+    for server in servers:
+        server.should_exit = True
+
 async def run_servers(manager_config=None):
+    global servers
     ip = "127.0.0.1" if svr_core.config.ENABLE_LOOPBACK_ONLY else get_lan_ip()
     cert_path, key_path = None, None
     ssl_params = {}
@@ -998,29 +1049,30 @@ async def run_servers(manager_config=None):
         ssl_params = {"ssl_certfile": cert_path, "ssl_keyfile": key_path}
 
     if svr_core.config.SECURE_SITE:
-        print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
+        pt_print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
               f" Connect to 'https://{ip}:{svr_core.config.HTTPS_PORT}'\n"
               f" (or https://localhost:{svr_core.config.HTTPS_PORT})\n"
               f" (ver {svr_core.config.VERSION})")
-        print(f"HTTP redirects from 'http://{ip}:{svr_core.config.HTTP_PORT}' to HTTPS.")
+        pt_print(f"HTTP redirects from 'http://{ip}:{svr_core.config.HTTP_PORT}' to HTTPS.")
     else:
-        print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
+        pt_print(f"\nServing web files\n from '{svr_core.config.SITE_FOLDER}' directory\n"
               f" Connect to 'http://{ip}:{svr_core.config.HTTP_PORT}'\n"
               f" (ver {svr_core.config.VERSION})")
 
-    print("=== FastAPI routes ===")
+    pt_print("=== FastAPI routes ===")
     for route in app.routes:
         if hasattr(route, "endpoint"):
             module_name = route.endpoint.__module__.split('.')[-1] if route.endpoint.__module__ else 'unknown'
-            print(f"{route.path:<20} → {route.endpoint.__name__} (from {module_name}.py)")
+            pt_print(f"{route.path:<20} → {route.endpoint.__name__} (from {module_name}.py)")
         elif hasattr(route, "app"):
             if route.path == '/api/manager':
-                print(f"{route.path:<20} ↪ mounted app: AdREST Manager API")
+                pt_print(f"{route.path:<20} ↪ mounted app: AdREST Manager API")
             else:
-                print(f"{route.path:<20} ↪ mounted app: {type(route.app).__name__}")
+                pt_print(f"{route.path:<20} ↪ mounted app: {type(route.app).__name__}")
         else:
-            print(f"{route.path:<20} ↪ [unknown route type]")
+            pt_print(f"{route.path:<20} ↪ [unknown route type]")
 
+    # ── Build server configs ─────────────────────────────────────────────
     server_configs = []
     lifespan_mode = "on" if svr_core.config.ENABLE_LIFESPAN else "off"
 
@@ -1039,6 +1091,67 @@ async def run_servers(manager_config=None):
     if manager_config is not None:
         server_configs.append(manager_config)
 
+    servers = [svr_core.uvicorn_module.Server(config) for config in server_configs]
+
+    # ── Interactive command loop ──────────────────────────────────────────
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.patch_stdout import patch_stdout
+    
+ 
+    async def command_loop():
+        global prompt_session
+        prompt_session = PromptSession()
+    
+        pt_print("\n📟 Interactive console available. Type 'help' for commands. Use Ctrl+l to clear screen.\n")
+        
+        cancel_event = asyncio.Event()
+    
+        try:
+            while not svr_core._should_exit:
+                try:
+                    line = await prompt_session.prompt_async("> ")
+                    line = line.strip()
+                    if not line:
+                        continue
+    
+                    parts = line.split()
+                    cmd = parts[0].lower()
+                    entry = svr_core.get_command(cmd)
+    
+                    if entry:
+                        func, _ = entry
+                        try:
+                            if asyncio.iscoroutinefunction(func):
+                                await func(parts[1:])
+                            else:
+                                await asyncio.to_thread(func, parts[1:])
+                        except Exception as e:
+                            pt_print(f"Error: {e}")
+                    else:
+                        pt_print(f"Unknown command: {cmd}. Type 'help' for list.")
+    
+                except asyncio.CancelledError:
+                    pt_print("\nShutdown signal received. Closing console.")
+                    cancel_event.set()
+                    break
+    
+                except (EOFError, KeyboardInterrupt):
+                    cancel_event.set()
+                    request_shutdown()
+                    break
+    
+                except Exception as e:
+                    pt_print(f"Command loop error: {e}")
+    
+        except asyncio.CancelledError:
+            pt_print("\nConsole closed due to server shutdown.")
+    
+        finally:
+            pt_print("Interactive console closed.")
+    
+    cmd_task = asyncio.create_task(command_loop())
+
+    # ── Auto-open (optional) ─────────────────────────────────────────────
     if svr_core.config.AUTO_OPEN_DEFAULT:
         async def _delayed_open():
             await asyncio.sleep(svr_core.config.AUTO_OPEN_DELAY_SECONDS)
@@ -1046,9 +1159,14 @@ async def run_servers(manager_config=None):
             await loop.run_in_executor(None, auto_open_default_page)
         asyncio.create_task(_delayed_open())
 
-    servers = [svr_core.uvicorn_module.Server(config) for config in server_configs]
-    await asyncio.gather(*[server.serve() for server in servers])
-
+    # ── Run everything ──────────────────────────────────────────────────
+    try:
+        await asyncio.gather(*[server.serve() for server in servers], cmd_task)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pt_print("Main runner caught termination. Cleaning up tasks...")
+    finally:
+        if not cmd_task.done():
+            cmd_task.cancel()
 
 # --- Main entry point ---
 if __name__ == "__main__":
@@ -1077,7 +1195,7 @@ if __name__ == "__main__":
     svr_core_handover = ServerCore(svr_config)
     success, message = svr_core_handover.ensure_server_core_dependencies()
     if not success:
-        print(f"\nFATAL ERROR: {message}")
+        pt_print(f"\nFATAL ERROR: {message}")
         sys.exit(1)
 
     # 3. Load EndpointsConfig if site_endpoints exists
@@ -1101,13 +1219,15 @@ if __name__ == "__main__":
     yaml_loaded = False
     try:
         import site_config
+        if hasattr(site_config, 'server_init'):
+            yaml_overrides = site_config.server_init(svr_core)
         if hasattr(site_config, 'load_config'):
             yaml_overrides = site_config.load_config()
             if yaml_overrides:
                 # Check version parity
                 yaml_version = yaml_overrides.get('VERSION')
                 if yaml_version and yaml_version != ServerConfig.VERSION:
-                    print(f"⚠️  External config version {yaml_version} does not match script version {ServerConfig.VERSION} – some fields may be outdated.")
+                    pt_print(f"⚠️  External config version {yaml_version} does not match script version {ServerConfig.VERSION} – some fields may be outdated.")
                 for k, v in yaml_overrides.items():
                     merged_dict[k] = v
                 logging.info("Applied overrides from site_config.yaml")
@@ -1118,9 +1238,9 @@ if __name__ == "__main__":
         logging.warning("⚠️ Error loading site_config: %s", e)
     # If no YAML config was loaded, suggest creating one
     if not yaml_loaded and not Path("site_config.yaml").exists():
-        print("\n💡 No site_config.yaml found. To customise settings, create one with:")
-        print("   python site_config.py --create")
-        print("   Then edit site_config.yaml to your preferences.\n")
+        pt_print("\n💡 No site_config.yaml found. To customise settings, create one with:")
+        pt_print("   python site_config.py --create")
+        pt_print("   Then edit site_config.yaml to your preferences.\n")
 
     # 6. Apply CLI overrides
     if args.port is not None:
@@ -1170,6 +1290,19 @@ if __name__ == "__main__":
 
     # Store merged config for later use by _load_site_endpoints
     svr_core.merged_config = merged_dict
+
+    # After svr_core = ServerCore(final_server_config)
+    def _help_cmd(args):
+        pt_print("Available commands:")
+        for name, (_, help_text) in svr_core._command_registry.items():
+            pt_print(f"  {name} - {help_text}")
+    
+    def _quit_cmd(args):
+        pt_print("🛑 Shutting down servers...")
+        request_shutdown()
+    
+    svr_core.register_command("help", _help_cmd, "Show this help")
+    svr_core.register_command("quit", _quit_cmd, "Shut down the server")
 
     init_server(svr_core)
 
@@ -1303,7 +1436,7 @@ if __name__ == "__main__":
             @asynccontextmanager
             async def lifespan(app: svr_core.FastAPI):
                 yield
-                print(f"\nCommencing graceful shutdown (within {svr_core.config.SHUTDOWN_TIMEOUT} seconds)\n")
+                pt_print(f"\nCommencing graceful shutdown (within {svr_core.config.SHUTDOWN_TIMEOUT} seconds)\n")
                 _release_lock()
 
             manager_app = svr_core.FastAPI(lifespan=lifespan)
