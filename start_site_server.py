@@ -31,7 +31,7 @@ from typing import List
 class ServerConfig:
     # ── Version and external config ─────────────────────────────────────
     VERSION_note = "Application version (do not change)"
-    VERSION: str = "2.1.1"                 # CHANGED: version bumped
+    VERSION: str = "2.2.0"                 # CHANGED: version bumped
 
     # ── Network ports ──────────────────────────────────────────────────
     HTTP_PORT_note = "TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)"
@@ -154,7 +154,7 @@ signal.signal(signal.SIGTERM, _shutdown_handler)
 signal.signal(signal.SIGINT, _shutdown_handler)   # also handle Ctrl+C gracefully
 
 # Get the directory where the script is located
-script_dir = os.path.dirname(os.path.abspath(__file__))
+script_dir = os.path.dirname(os.path.realpath(__file__))
 
 # Change the current working directory to the script's directory
 os.chdir(script_dir)
@@ -807,7 +807,7 @@ svr_core = None
 
 # --- Path security function (uses svr_core.config) ---
 def secure_filepath(filepath):
-    site_root = os.path.realpath(svr_core.config.SITE_FOLDER)
+    site_root = os.path.abspath(svr_core.config.SITE_FOLDER)
     real = os.path.realpath(filepath)
     if not hasattr(secure_filepath, "_printed"):
         print("\n--- Symlink whitelist resolution ---")
@@ -901,20 +901,21 @@ def _load_site_endpoints(app_instance, core):
                 # Extract fields that belong to EndpointsConfig
                 endpoint_fields = {f.name for f in fields(site_endpoints.EndpointsConfig)}
                 endpoint_dict = {k: v for k, v in core.merged_config.items() if k in endpoint_fields}
-                if endpoint_dict:
-                    endpoint_config = site_endpoints.EndpointsConfig(**endpoint_dict)
-                    site_endpoints.init(app_instance, core, endpoint_config=endpoint_config)
-                else:
-                    site_endpoints.init(app_instance, core)
+            # Call async init(..) if it is a coroutine, else call as standard method.
+            if inspect.iscoroutinefunction(site_endpoints.init):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    asyncio.run(site_endpoints.init(app_instance, core))
             else:
                 site_endpoints.init(app_instance, core)
             logging.info("site_endpoints active")
         else:
             logging.info("site_endpoints unused (not found)")
     except ImportError as e:
-        logging.warning("⚠️ site_endpoints unused (import error): %s", e)
+       logging.error("❌️ site_endpoints unused (import error): %s", e)
     except Exception as e:
-        logging.error("❌  site_endpoints unused (other error): %s", e)
+       logging.error("❌  site_endpoints unused (other error): %s", e)
 
 def auto_open_default_page():
     try:
@@ -1072,7 +1073,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    logging.warning("️❤️️  Starting ─── ")
+    logging.info("️❤️️  Starting ─── ")
+    logging.info(f"Working in: {script_dir}")
 
     # 1. Load default ServerConfig dict with notes
     server_dict = _asdict_with_notes(ServerConfig)
