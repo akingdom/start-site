@@ -31,7 +31,7 @@ from typing import List
 class ServerConfig:
     # ── Version and external config ─────────────────────────────────────
     VERSION_note = "Application version (do not change)"
-    VERSION: str = "2.2.0"                 # CHANGED: version bumped
+    VERSION: str = "2.2.1"                 # CHANGED: version bumped (reverted to #8e21763)
 
     # ── Network ports ──────────────────────────────────────────────────
     HTTP_PORT_note = "TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)"
@@ -901,14 +901,7 @@ def _load_site_endpoints(app_instance, core):
                 # Extract fields that belong to EndpointsConfig
                 endpoint_fields = {f.name for f in fields(site_endpoints.EndpointsConfig)}
                 endpoint_dict = {k: v for k, v in core.merged_config.items() if k in endpoint_fields}
-            # Call async init(..) if it is a coroutine, else call as standard method.
-            if inspect.iscoroutinefunction(site_endpoints.init):
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    asyncio.run(site_endpoints.init(app_instance, core))
-            else:
-                site_endpoints.init(app_instance, core)
+            site_endpoints.init(app_instance, core)
             logging.info("site_endpoints active")
         else:
             logging.info("site_endpoints unused (not found)")
