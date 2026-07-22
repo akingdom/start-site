@@ -31,7 +31,7 @@ from typing import List
 class ServerConfig:
     # ── Version and external config ─────────────────────────────────────
     VERSION_note = "Application version (do not change)"
-    VERSION: str = "2.3.2"                 # CHANGED: version bumped
+    VERSION: str = "2.4.0"                 # CHANGED: version bumped
 
     # ── Network ports ──────────────────────────────────────────────────
     HTTP_PORT_note = "TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)"
@@ -136,6 +136,9 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+# --- import tracking ---
+site_endpoints = None
 
 # --- Signal handling for graceful shutdown ---
 #     Guarantee the lifespan shutdown and lock release run
@@ -922,6 +925,10 @@ def _load_site_endpoints(app_instance, core):
     """Load site_endpoints.py after ports have been finalised.
        Uses core.merged_config (if present) to build an EndpointsConfig.
     """
+    global site_endpoints
+    if site_endpoints is None:
+        logging.info("site_endpoints unused (not found)")
+        return
     try:
         if os.path.exists("site_endpoints.py"):
             import site_endpoints
@@ -935,12 +942,9 @@ def _load_site_endpoints(app_instance, core):
                 endpoint_dict = {k: v for k, v in core.merged_config.items() if k in endpoint_fields}
             site_endpoints.init(app_instance, core)
             logging.info("site_endpoints active")
-        else:
-            logging.info("site_endpoints unused (not found)")
-    except ImportError as e:
-       logging.error("❌️ site_endpoints unused (import error): %s", e)
     except Exception as e:
-       logging.error("❌  site_endpoints unused (other error): %s", e)
+       logging.error("❌  site_endpoints unused (init error): %s", e)
+       site_endpoints = None
 
 def auto_open_default_page():
     try:
@@ -1149,6 +1153,14 @@ async def run_servers(manager_config=None):
         finally:
             pt_print("Interactive console closed.")
     
+    # ── Optional "about to start" callback ────────────────────────────
+    if site_endpoints is not None and hasattr(site_endpoints, 'about_to_start'):
+        try:
+            asyncio.create_task(site_endpoints.about_to_start(svr_core))
+        except Exception as e:
+            print(f"⚠️ endpoints about_to_start callback failed: {e}", file=sys.stderr)
+
+    # ── About to start ─────────────────────────────────────────────
     cmd_task = asyncio.create_task(command_loop())
 
     # ── Auto-open (optional) ─────────────────────────────────────────────
@@ -1200,14 +1212,20 @@ if __name__ == "__main__":
 
     # 3. Load EndpointsConfig if site_endpoints exists
     endpoints_dict = None
-    try:
-        import site_endpoints
-        if hasattr(site_endpoints, 'EndpointsConfig'):
-            endpoints_dict = _asdict_with_notes(site_endpoints.EndpointsConfig)
-    except ImportError:
-        logging.info("site_endpoints.py not found; skipping endpoint config.")
-    except Exception as e:
-        logging.warning("⚠️  Failed to import site_endpoints for config: %s", e)
+    if os.path.exists("site_endpoints.py"):
+        try:
+            import site_endpoints
+            if hasattr(site_endpoints, 'EndpointsConfig'):
+                endpoints_dict = _asdict_with_notes(site_endpoints.EndpointsConfig)
+        except ImportError as e:
+            logging.error("❌️ site_endpoints unused (import error): %s", e)
+            site_endpoints = None
+        except Exception as e:
+            logging.warning("⚠️  Failed to import site_endpoints for config: %s", e)
+            site_endpoints = None
+    else:
+       logging.info("site_endpoints.py not found; skipping endpoint config.")
+       site_endpoints = None
 
     # 4. Merge: endpoints overrides server
     merged_dict = server_dict.copy()
