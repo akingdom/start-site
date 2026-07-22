@@ -197,7 +197,7 @@ class ServerCore:
     A shared context object for the server instance, containing imported modules
     and core utilities.
     """
-    initial_commands = []
+    
     def __init__(self, config: ServerConfig): # For tracking successfully imported modules
         self.config = config # Reference to the ServerConfig object
         self._imported_modules_cache: Dict[str, Any] = {} # Populated by _ensure_dependencies. For tracking successfully imported modules.
@@ -1103,28 +1103,6 @@ async def run_servers(manager_config=None):
     from prompt_toolkit import PromptSession
     from prompt_toolkit.patch_stdout import patch_stdout
     
-    def command_setup(svr_core):
-        # ── Execute initial commands from svr_core ──────────────────────
-        if hasattr(svr_core, 'initial_commands') and svr_core.initial_commands:
-            for cmd_line in svr_core.initial_commands:
-                if not cmd_line.strip():
-                    continue
-                parts = cmd_line.strip().split()
-                cmd = parts[0].lower()
-                entry = svr_core.get_command(cmd)
-                if entry:
-                    func, _ = entry
-                    try:
-                        # Run synchronously (blocking) – but we're before the prompt, so it's fine.
-                        if asyncio.iscoroutinefunction(func):
-                            asyncio.run(func(parts[1:]))
-                        else:
-                            func(parts[1:])
-                    except Exception as e:
-                        print(f"Error executing initial command '{cmd}': {e}", file=sys.stderr)
-                else:
-                    print(f"Unknown initial command: '{cmd}'", file=sys.stderr)
-
     async def command_loop():
         global prompt_session
         prompt_session = PromptSession()
@@ -1184,7 +1162,7 @@ async def run_servers(manager_config=None):
             print(f"⚠️ endpoints about_to_start callback failed: {e}", file=sys.stderr)
 
     # ── About to start ─────────────────────────────────────────────
-    command_setup(svr_core)
+
     cmd_task = asyncio.create_task(command_loop())
 
     # ── Auto-open (optional) ─────────────────────────────────────────────
