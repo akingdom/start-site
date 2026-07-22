@@ -10,17 +10,19 @@ from typing import Optional, List
 
 @dataclass
 class EndpointsConfig:
-    # ── Directories ──────────────────────────────────────────────────────
-    GREETING_note = "Sample config item for Endpoints."
     GREETING: str = "Hello"
 
-
-# Declare numpy dependency - this is preferred over 'import xxx' in this particular file.
+# Declare dependencies – the server will load them before calling init.
 REQUIRED_ENDPOINT_MODULES = {
-    "numpy": ("numpy", True),
+    "numpy": ("numpy", True),   # package name, critical
 }
 
 _svr_core_ref = None
+
+async def about_to_start(svr_core):
+    """Called just before the main event loop starts."""
+    print("📋 Server is about to start – running pre‑flight checks.")
+    print(f"   Greeting is: {svr_core.config.GREETING if hasattr(svr_core.config, 'GREETING') else 'Not set'}")
 
 def init(app, svr_core):
     global _svr_core_ref
