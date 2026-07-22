@@ -1,6 +1,6 @@
 # start‑site – A Modern Local Web Server
 
-**One script. Zero config. Production‑ready HTTPS. Sane port management.**
+**One script. Zero config. Development‑ready HTTPS. Sane port management.**
 
 `start‑site` is a single‑file Python web server designed for local development, secure prototyping, and multi‑user collaboration. It gives you a full‑featured server with automatic HTTPS, dynamic port allocation, and a plug‑in extension system – all without editing a single line of configuration.
 
