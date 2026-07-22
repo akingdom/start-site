@@ -111,6 +111,7 @@ class ServerConfig:
 
 
 from dataclasses import dataclass, field, fields, asdict
+from types import SimpleNamespace
 from typing import List, Optional, Any, Dict, Tuple, Callable, Type, TypeVar
 from datetime import datetime, timedelta, timezone
 import asyncio
@@ -196,6 +197,7 @@ class ServerCore:
     A shared context object for the server instance, containing imported modules
     and core utilities.
     """
+    initial_commands = []
     def __init__(self, config: ServerConfig): # For tracking successfully imported modules
         self.config = config # Reference to the ServerConfig object
         self._imported_modules_cache: Dict[str, Any] = {} # Populated by _ensure_dependencies. For tracking successfully imported modules.
@@ -1101,7 +1103,29 @@ async def run_servers(manager_config=None):
     from prompt_toolkit import PromptSession
     from prompt_toolkit.patch_stdout import patch_stdout
     
- 
+    def command_setup(svr_core):
+        # ── Execute initial commands from svr_core ──────────────────────
+        if hasattr(svr_core, 'initial_commands') and svr_core.initial_commands:
+            for cmd_line in svr_core.initial_commands:
+                if not cmd_line.strip():
+                    continue
+                print(f" {cmd_line}")
+                parts = cmd_line.strip().split()
+                cmd = parts[0].lower()
+                entry = svr_core.get_command(cmd)
+                if entry:
+                    func, _ = entry
+                    try:
+                        # Run synchronously (blocking) – but we're before the prompt, so it's fine.
+                        if asyncio.iscoroutinefunction(func):
+                            asyncio.run(func(parts[1:]))
+                        else:
+                            func(parts[1:])
+                    except Exception as e:
+                        print(f"Error executing initial command '{cmd}': {e}", file=sys.stderr)
+                else:
+                    print(f"Unknown initial command: '{cmd}'", file=sys.stderr)
+
     async def command_loop():
         global prompt_session
         prompt_session = PromptSession()
@@ -1161,6 +1185,7 @@ async def run_servers(manager_config=None):
             print(f"⚠️ endpoints about_to_start callback failed: {e}", file=sys.stderr)
 
     # ── About to start ─────────────────────────────────────────────
+    command_setup(svr_core)
     cmd_task = asyncio.create_task(command_loop())
 
     # ── Auto-open (optional) ─────────────────────────────────────────────
@@ -1199,16 +1224,16 @@ if __name__ == "__main__":
     logging.info("️❤️️  Starting ─── ")
     logging.info(f"Working in: {script_dir}")
 
-    # 1. Load default ServerConfig dict with notes
-    server_dict = _asdict_with_notes(ServerConfig)
-
-    # 2. Load dependencies first (so we can import site_endpoints safely)
+    # 1. Load dependencies first (so we can import site_endpoints safely)
     svr_config = ServerConfig()  # temporary, will be replaced later
     svr_core_handover = ServerCore(svr_config)
     success, message = svr_core_handover.ensure_server_core_dependencies()
     if not success:
         pt_print(f"\nFATAL ERROR: {message}")
         sys.exit(1)
+
+    # 1. Load default ServerConfig dict with notes
+    server_dict = _asdict_with_notes(ServerConfig)
 
     # 3. Load EndpointsConfig if site_endpoints exists
     endpoints_dict = None
@@ -1227,27 +1252,24 @@ if __name__ == "__main__":
        logging.info("site_endpoints.py not found; skipping endpoint config.")
        site_endpoints = None
 
-    # 4. Merge: endpoints overrides server
-    merged_dict = server_dict.copy()
-    if endpoints_dict:
-        for k, v in endpoints_dict.items():
-            merged_dict[k] = v
-
-    # 5. Apply YAML overrides from site_config.yaml (if site_config.py exists)
+    # 4. Apply YAML overrides from site_config.yaml (if site_config.py exists)
     yaml_loaded = False
     site_config_module = None
+    yaml_dict = {}
     try:
         import site_config as sc
         site_config_module = sc
         if hasattr(sc, 'load_config'):
             yaml_overrides = sc.load_config()
+            print(f"+++ {yaml_overrides}")
             if yaml_overrides:
                 # Check version parity
                 yaml_version = yaml_overrides.get('VERSION')
                 if yaml_version and yaml_version != ServerConfig.VERSION:
                     pt_print(f"⚠️  External config version {yaml_version} does not match script version {ServerConfig.VERSION} – some fields may be outdated.")
                 for k, v in yaml_overrides.items():
-                    merged_dict[k] = v
+                    yaml_dict[k] = v
+                    print(f"- [{k} = '{v}']")
                 logging.info("Applied overrides from site_config.yaml")
                 yaml_loaded = True
     except ImportError:
@@ -1263,28 +1285,44 @@ if __name__ == "__main__":
         pt_print("   Then edit site_config.yaml to your preferences.\n")
 
     # 6. Apply CLI overrides
+    cli_dict = {}
     if args.port is not None:
-        merged_dict['HTTP_PORT'] = args.port
+        cli_dict['HTTP_PORT'] = args.port
     if args.https_port is not None:
-        merged_dict['HTTPS_PORT'] = args.https_port
+        cli_dict['HTTPS_PORT'] = args.https_port
     if args.secure is not None:
-        merged_dict['SECURE_SITE'] = args.secure.lower() == 'true'
+        cli_dict['SECURE_SITE'] = args.secure.lower() == 'true'
     if args.force_cert_regen:
-        merged_dict['FORCE_CERTIFICATE_REGENERATION'] = True
+        cli_dict['FORCE_CERTIFICATE_REGENERATION'] = True
     if args.auto_open:
-        merged_dict['AUTO_OPEN_DEFAULT'] = True
+        cli_dict['AUTO_OPEN_DEFAULT'] = True
     if args.open_delay is not None:
-        merged_dict['AUTO_OPEN_DELAY_SECONDS'] = args.open_delay
+        cli_dict['AUTO_OPEN_DELAY_SECONDS'] = args.open_delay
     if args.disable_adrest:
-        merged_dict['ADREST_ENABLED'] = False
+        cli_dict['ADREST_ENABLED'] = False
 
-    # 7. Construct final ServerConfig
-    server_fields = {f.name for f in fields(ServerConfig)}
-    server_final = {}
-    for k, v in merged_dict.items():
-        if k in server_fields:
-            server_final[k] = v
-    final_server_config = ServerConfig(**server_final)
+    # 7. Construct final merged config
+    merged_config = {}
+    merged_config.update(server_dict)   # from ServerConfig
+    merged_config.update(endpoints_dict) # from EndpointsConfig (if any)
+    merged_config.update(yaml_dict)    # from site_config.yaml
+    merged_config.update(cli_dict)     # from command-line flags
+    # Filter notes
+    for k in list(merged_config.keys()):
+        if k.endswith("_note"):
+            companion_key = k[:-5]
+            if companion_key in merged_config:
+                # This is a field named "xyz_note"
+                if companion_key.endswith("_note"):
+                    print(f"⚠️ Warning: Field '{k}' has companion '{companion_key}' which is also a field. "
+                          f"This is ambiguous and not recommended. Keeping '{k}'.")
+                # Keep it – it's a legitimate field
+            else:
+                # No companion – this is a comment key, drop it
+                del merged_config[k]
+
+    final_server_config = SimpleNamespace(**merged_config)
+    print(f" <<< {final_server_config}")
 
     # 8. Handover to global svr_core and init server
     svr_core = ServerCore(final_server_config)
@@ -1308,9 +1346,6 @@ if __name__ == "__main__":
         svr_core.cryptography_rsa = svr_core_handover.cryptography_rsa
         svr_core.cryptography_default_backend = svr_core_handover.cryptography_default_backend
 
-    # Store merged config for later use by _load_site_endpoints
-    svr_core.merged_config = merged_dict
-
     # After svr_core = ServerCore(final_server_config)
     def _help_cmd(args):
         pt_print("Available commands:")
@@ -1327,7 +1362,7 @@ if __name__ == "__main__":
     # Register config commands from site_config module
     if site_config_module is not None and hasattr(site_config_module, 'register_commands'):
         try:
-            site_config_module.register_commands(svr_core, merged_dict)
+            site_config_module.register_commands(svr_core, final_server_config)
         except Exception as e:
             logging.warning("⚠️ Error registering site_config commands: %s", e)
 
