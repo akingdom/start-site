@@ -1,251 +1,209 @@
-## start‑site
+# start‑site – A Modern Local Web Server
 
-A single‑file local web server for quick testing, workspace prototyping, and multi‑user development.  
-It serves a static folder, optionally over HTTPS, and can run multiple independent instances without port collisions thanks to its built‑in **AdREST** dynamic port manager.
+**One script. Zero config. Production‑ready HTTPS. Sane port management.**
+
+`start‑site` is a single‑file Python web server designed for local development, secure prototyping, and multi‑user collaboration. It gives you a full‑featured server with automatic HTTPS, dynamic port allocation, and a plug‑in extension system – all without editing a single line of configuration.
+
+Think of it as `python -m http.server` – but with the security and convenience of a production server.
 
 ---
 
-## Prerequisites
+## Why `start‑site`?
 
-- [Python 3.8+](https://www.python.org/downloads/)  
-- `pip install --upgrade pip`
+| Feature | `python -m http.server` | Apache / Nginx | **start‑site** |
+|---------|--------------------------|----------------|----------------|
+| HTTPS | ❌ Manual & complex | ✅ (complex setup) | ✅ **Automatic** |
+| Multiple instances | ❌ Manual port juggling | ❌ Manual | ✅ **Automatic (AdREST)** |
+| Extensible | ❌ No | ✅ | ✅ **Plug‑in system** |
+| Single file | ✅ | ❌ | ✅ |
+| Cross‑platform | ✅ | ✅ | ✅ |
+| Zero config | ✅ | ❌ | ✅ |
+| Loopback‑only (secure by default) | ❌ (binds all interfaces) | ❌ (binds all interfaces) | ✅ **Enabled by default** |
+
+`start‑site` is built for developers who need a **secure, hassle‑free, disposable local server** – whether for rapid prototyping, running multiple microservices, sharing a demo across a team, or as a foundation for larger toolchains.
 
 ---
 
 ## Quickstart
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/akingdom/start-site.git
-   cd start-site
-   ```
-
-2. **Run the server**
-   ```bash
-   python3 start_site_server.py
-   ```
-   On first run, the server will prompt you to create a `site_config.yaml` file – or you can generate it manually:
-   ```bash
-   python3 site_config.py --create
-   ```
-   Then edit `site_config.yaml` to change settings (see [Configuration](#configuration) below).
-
-3. **Open your browser**  
-   The server prints the address (e.g. `https://localhost:8003`) and opens it automatically if `AUTO_OPEN_DEFAULT` is `True`.
-
-4. **Add your files**  
-   Place HTML, CSS, JS, and other assets inside the `live/` folder. These are served directly.
-
----
-
-## Important
-
-- **HTTPS** may require restarting the browser the first time if a security warning appears – the server creates a local CA and installs it automatically (macOS). On other platforms you may need to accept the self‑signed certificate manually.
-- If you already have your own SSL certificate, set `SSL_CERT_FILE` and `SSL_KEY_FILE` in the configuration. The server will use them instead of generating a self‑signed one.
-- The server runs from its own directory; change the current working directory to the script’s location before starting.
-
----
-
-## Configuration (without editing the script)
-
-To keep `start_site_server.py` easy to upgrade (by being completely **immutable**), use the external YAML configuration file `site_config.yaml`.
-
-1. **Generate a default configuration** (if missing):  
-   ```bash
-   python3 site_config.py --create
-   ```
-   This creates `site_config.yaml` with all fields and their comment documentation.
-
-2. **Edit the file**:  
-   - Uncomment or change any value.  
-   - Full documentation is included as YAML comments (`_note` fields).  
-   - Example:
-     ```yaml
-     # TCP Port for HTTP traffic (will redirect to HTTPS_PORT if SECURE_SITE = True)
-     HTTP_PORT: 8080
-
-     # Enable HTTPS/SSL
-     SECURE_SITE: true
-     ```
-
-3. **Run the server** – YAML values automatically override the internal defaults.  
-   If the YAML file’s `VERSION` differs from the script’s version, you’ll see a warning (the server still runs, but some fields may be outdated).
-
-`site_config.py` can be omitted. Only `start_site_server.py` is needed to run the server.
-
-### Internal defaults (inside `start_site_server.py`)
-
-The built‑in `ServerConfig` dataclass provides sensible defaults (see the source for the full list).  
-You never need to edit this block – customise via `site_config.yaml`.
-
-### Endpoints configuration (`site_endpoints.py`)
-
-If you use `site_endpoints.py` to add custom API routes, you can also configure its behaviour via YAML.  
-`site_config.py --create` includes all fields from `EndpointsConfig` (defined in `site_endpoints.py`) alongside the server fields.  
-Example:
-```yaml
-# Root folder for project directories.
-PROJECTS_ROOT: "live/projects"
-
-# If True, disables all write operations (PUT, POST, DELETE, PATCH).
-READONLY: false
+```bash
+git clone https://github.com/akingdom/start-site.git
+cd start-site
+python3 start_site_server.py
 ```
 
-The endpoints configuration is merged with the server configuration – endpoint settings override server settings if there are name conflicts.
+On first run, the server creates a `site_config.yaml` file and prints its address. Place your static assets in the `live/` folder, and they are served immediately.
 
-### Upgrading existing `ServerConfig.py`
-
-If you previously used the old `ServerConfig.py`, you can migrate to the new YAML system:
-
-1. **Generate a fresh YAML file**:
-   ```bash
-   python3 site_config.py --create
-   ```
-2. **Copy your custom values** from the old `ServerConfig.py` into `site_config.yaml`.
-3. **Remove or rename** `ServerConfig.py` – it will be ignored.
-4. **Test** the server with your custom settings.
-
-The old `--write-config` flag no longer exists; use `site_config.py` instead.
-
-### Command‑line options for configuration
-
-| Flag | Description |
-|------|-------------|
-| `--config PATH` | *(Deprecated)* Path to a legacy Python config file – use `site_config.yaml` instead. |
-| `--port PORT` | Override `HTTP_PORT` setting (takes precedence). |
-| `--https-port PORT` | Override `HTTPS_PORT` setting. |
-| `--secure true/false` | Toggle `SECURE_SITE`. |
-| `--force-cert-regen` | Force SSL certificate regeneration. |
-| `--auto-open` | Open the default page automatically. |
-| `--open-delay SECONDS` | Delay before auto‑opening. |
-| `--disable-adrest` | Disable AdREST dynamic port manager for this run. |
-
-### Version checks
-
-The YAML config includes an active `VERSION` field. When the server loads it, it compares that version with its own internal version. If they differ, a warning is printed (the server still runs, using the external values where possible). To update, regenerate the template with `site_config.py --create` and manually merge your changes, or use `site_config.py --update` to add any new fields while preserving your existing values.
+**That's it.** No configuration required. HTTPS and port management are enabled by default.
 
 ---
 
-## Basic HTTP Setup (no encryption)
+## Key Features
 
-If you don't need HTTPS, set `SECURE_SITE: false` and (optionally) `ADREST_ENABLED: false` for a plain HTTP server:
+### 🔒 Automatic HTTPS with a Local CA
+- No need for `openssl` or manual certificate generation.
+- The server creates a root CA and a signed certificate for `localhost` on first run.
+- On macOS, the CA is installed automatically. On other platforms, a simple one‑time acceptance is required.
+- Custom certificates can be used by specifying `SSL_CERT_FILE` and `SSL_KEY_FILE`.
 
-```yaml
-# In site_config.yaml
-SECURE_SITE: false
-ADREST_ENABLED: false   # if you want a fixed port
-```
+### 🚦 AdREST – Dynamic Port Management
+When multiple users or projects run `start‑site` on the same machine, port conflicts are handled automatically:
 
-Then run `python3 start_site_server.py`. The server will start on `http://localhost:8002` (or the port you configured).  
-You can still use AdREST with HTTP – just leave `ADREST_ENABLED: true` and the manager will assign free ports automatically.
+- The **first instance** becomes a manager, assigning free HTTP/HTTPS ports to subsequent instances.
+- Ports are reused across restarts when available.
+- Works seamlessly for teams – each user has their own registry file.
 
----
+### 🔧 Immutable Core & External Configuration
+- All settings live in `site_config.yaml` – never edit the script.
+- Upgrading is safe: replace the script, keep your config.
+- Command‑line flags override YAML for quick one‑offs.
 
-## Built‑in Dynamic Port Management (AdREST)
+### 🧩 Pluggable Extension System
+Add custom endpoints, middleware, or background tasks without forking the script.
 
-When multiple users (or multiple projects) want to run `start_site_server.py` on the same machine, port conflicts can happen.  
-**AdREST** solves this automatically:
+Create `site_endpoints.py` next to the script. The server calls two optional functions if they exist:
 
-1. The **first instance** that starts (without explicit `--port` and `--https-port` arguments) becomes the *AdREST manager*.  
-   - It picks free ports for the main HTTP/HTTPS server **and** a free port for the manager API.  
-   - The manager port is stored in a per‑user registry file (`~/.local/share/workspace-server/port-registry.json`) under the key `"services.adrest"`.  
-   - The manager API (`/api/manager/*`) runs on its own isolated port, bound to `127.0.0.1`, so it is never accessible from the browser or external network.
+- `init(app, svr_core)` – called during startup to mount routes.
+- `about_to_start(svr_core)` – called just before the main event loop starts (useful for pre‑flight checks or warming caches).
 
-2. **Subsequent instances** read the registry to discover the manager’s port, then call `POST /api/manager/register` on that port to receive unique HTTP/HTTPS ports – no collisions, no manual configuration.
-
-3. **Standalone mode**  
-   Pass `--port` and `--https-port` on the command line, or set `ADREST_ENABLED: false` in the configuration, to disable AdREST entirely. The server will then use the ports you specify (or the defaults) and ignore the manager.
-
-> **Tip:** On shared machines each user gets their own registry file, so multiple users can run their own manager without interference.  
-> The manager and workspace ports are **reused** on restart if still free, keeping addresses stable.
-
----
-
-## Extending the server (`site_endpoints.py`)
-
-It is strongly recommended to make no changes to the `start_site_server` script, treating it as *immutable*, apart from customising settings in `site_config.yaml` or using the built‑in extension system.
-
-You can add custom API endpoints without modifying the core script.
-
-1. Create a file named `site_endpoints.py` in the same directory.
-2. Define an `EndpointsConfig` dataclass (optional – see `site_endpoints.py` for the default) and an `init(app, svr_core, endpoint_config=None)` function. The server calls it after creating the FastAPI app, so you can add routes, middleware, or background tasks.
-
-Example (`site_endpoints.py`):
+**Example 1 – Simple endpoint:**
 ```python
-def init(app, svr_core, endpoint_config=None):
+def init(app, svr_core):
     @app.get("/api/hello")
     async def hello():
         return {"message": "Hello from site_endpoints!"}
 
-    # You can also adjust server configuration from here
-    svr_core.config.ENABLE_LIFESPAN = True       # if your endpoints need lifespan events
-    svr_core.config.SERVE_STATIC_FILES = False   # if you only need WebSocket/API
+async def about_to_start(svr_core):
+    print("📋 Server is about to start – running pre‑flight checks.")
 ```
 
-The file is optional – if it doesn’t exist, the server runs without extra endpoints.
+**Example 2 – Full boilerplate (matching the included `site_endpoints.py` sample):**
+```python
+from dataclasses import dataclass, field
+from typing import Optional, List
+
+@dataclass
+class EndpointsConfig:
+    GREETING: str = "Hello"
+
+# Declare dependencies – the server will load them before calling init.
+REQUIRED_ENDPOINT_MODULES = {
+    "numpy": ("numpy", True),   # package name, critical
+}
+
+_svr_core_ref = None
+
+async def about_to_start(svr_core):
+    """Called just before the main event loop starts."""
+    print("📋 Server is about to start – running pre‑flight checks.")
+    print(f"   Greeting is: {svr_core.config.GREETING if hasattr(svr_core.config, 'GREETING') else 'Not set'}")
+
+def init(app, svr_core):
+    global _svr_core_ref
+    _svr_core_ref = svr_core
+
+    # Load numpy before defining the endpoint
+    svr_core.load_endpoint_modules(REQUIRED_ENDPOINT_MODULES)
+
+    JSONResponse = svr_core.fastapi_module.responses.JSONResponse
+    numpy_mod   = svr_core.numpy_module
+
+    @app.get("/api/add")
+    async def add(a: float, b: float):
+        """Add two numbers using numpy."""
+        try:
+            result = numpy_mod.add(a, b).item()
+            return JSONResponse({"result": result})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+
+    print("[site_endpoints] Loaded endpoint: GET /api/add")
+```
+
+The server’s `EndpointsConfig` dataclass (if defined) is merged into the main configuration, so any fields like `GREETING` can be set in `site_config.yaml` and accessed via `svr_core.config`.
+
+### 📋 Built‑in Diagnostics
+A plain‑text Markdown snapshot is written to a well‑known location (`~/.local/share/workspace-server/diagnostics/`). It shows:
+- Server status, PID, uptime, ports.
+- SSL certificate validity and trust.
+- Active AdREST registry entries.
+- Project health (if using `site_endpoints.py` with custom endpoints).
+
+**Check this file first when something goes wrong – it tells you exactly what broke.**
+
+### 🔒 Loopback‑Only by Default
+By default, the server binds only to `127.0.0.1` (localhost). This prevents accidental exposure to other devices on your network and keeps your development environment secure.
+
+If you need to share your server with others on the same network, you can disable this by setting `ENABLE_LOOPBACK_ONLY: false` in `site_config.yaml`. **Enabling this exposes your server to other devices on the network – only use this in trusted environments or when you understand the security implications.**
 
 ---
 
-## Launching a registered service
+## Why HTTPS Matters for Local Development
 
-Use the included `adrest_launcher.py` to open any AdREST‑registered service in your browser without knowing its port:
+Many modern web APIs **require a secure context (HTTPS)**, even when running locally. With `start‑site`, you get HTTPS out of the box, so you can test:
 
-```bash
-python adrest_launcher.py com.workspace.supersystem
-```
+- **Service Workers** – for offline support and PWA features.
+- **Geolocation API** – for location‑aware apps.
+- **WebUSB, WebBluetooth, WebHID** – for hardware interaction.
+- **MediaDevices (getUserMedia)** – for camera/microphone access.
+- **Secure cookies** – with `Secure` and `SameSite=None` flags.
+- **Payment Request API** – for web payments.
+- **Server‑Sent Events / WebSockets** – over TLS.
 
-If the service isn’t running, the script will offer to start `start_site_server.py` and then open the browser automatically.
-
----
-
-## Diagnostics
-
-When something goes wrong, the server writes a **state snapshot** to a plain Markdown file.  
-You can open it in any editor — no browser required.
-
-**Location (cross‑platform):**
-
-| OS | Path |
-|----|------|
-| Linux | `~/.local/share/workspace-server/diagnostics/com.workspace.supersystem.md` |
-| macOS | `~/Library/Application Support/workspace-server/diagnostics/com.workspace.supersystem.md` |
-| Windows | `%APPDATA%/workspace-server/diagnostics/com.workspace.supersystem.md` |
-
-The file is regenerated at startup and updated when important events occur. It answers:
-
-- **"Is the server running?"** — status, PID, ports, uptime.
-- **"Is SSL working?"** — certificate validity and trust status.
-- **"What services are registered?"** — live registry table with alive/dead flags.
-- **"Which projects are broken?"** — per‑project health (requires `site_endpoints.py`).
-
-A companion file `workspace.md` in the same directory shows per‑project health (requires the `site_endpoints.py` that ships with the Super‑System).
-
-The diagnostics directory is private (`0700` permissions). Each file is less than 5 KB and is pruned automatically when services stop. No user data is ever included — only metadata (ports, PIDs, project names, dependency lists).
-
-> **Before suggesting any fix, check the diagnostic file.** It should tell you exactly which component failed.
+With `http.server`, you'd have to set up a complex proxy or self‑signed certificates. `start‑site` does it for you.
 
 ---
 
-## `live/` folder structure
+## Configuration – Without Editing the Script
 
-```
-live/
-├── index.html          # Served at /
-├── projects/           # (optional) sub‑project folders
-│   └── hello/
-│       └── index.html
-├── js/                 # symlinked if ALLOWED_SYMLINK_TARGETS includes it
-└── .data/              # (created by extensions) private project data
+All settings are defined in `site_config.yaml`, which is auto‑generated on first run. The file is fully documented with comments – uncomment and change only what you need.
+
+```yaml
+HTTP_PORT: 8080
+SECURE_SITE: true
 ```
 
-The server blocks direct HTTP access to any `.data` directory – use the API endpoints provided by your extension.
+Command‑line flags override YAML values:
+- `--port PORT` – override HTTP port.
+- `--secure true/false` – toggle HTTPS.
+- `--disable-adrest` – run in standalone mode (fixed ports).
+- `--auto-open` – automatically open the default page.
 
 ---
 
 ## Upgrading
 
-Because all custom settings are stored in a separate `site_config.yaml` file (and optional `site_endpoints.py`), you can safely replace `start_site_server.py` with a newer version without losing your configuration.  
-If the new script introduces changed or removed fields, the version comparison will warn you; simply run `site_config.py --create` to generate a fresh template and merge your changes manually.
+Because the core script is **immutable** and all configuration is externalised, upgrading is safe and simple:
+
+1. Download the new `start_site_server.py`.
+2. Replace the old file – your `site_config.yaml` and `site_endpoints.py` remain untouched.
+3. If the new version introduces new configuration fields, the version check will warn you. Run `python site_config.py --create` to generate a fresh template and merge your changes.
+
+---
+
+## How It Works Under the Hood
+
+- **FastAPI + Uvicorn** – modern, async‑first web stack.
+- **AdREST** – a per‑user registry file (`~/.local/share/workspace-server/port-registry.json`) manages port allocation.
+- **Certificate Manager** – creates a local CA and signed leaf certificate with SANs for `localhost`, `127.0.0.1`, `::1`, and your LAN IP (when loopback‑only is disabled).
+- **Symlink security** – only whitelisted symlink targets are followed, preventing path traversal attacks.
+- **Diagnostics** – writes a Markdown snapshot on startup and on significant events.
+
+---
+
+## Use Cases
+
+- **Frontend development** – serve static assets with HTTPS for testing Service Workers, Geolocation, or secure cookies.
+- **Microservice prototyping** – run multiple services on the same machine without port conflicts.
+- **Demo sharing** – start a temporary server to share a prototype with colleagues (HTTPS ensures modern APIs work).
+- **Workspace tooling** – used as the foundation for the Super‑System, providing a local API server for project‑oriented development.
+
+---
+
+## Requirements
+
+- Python 3.8+
+- Optional: `cryptography` (auto‑installed on first run if needed for certificate generation).
 
 ---
 
@@ -253,3 +211,9 @@ If the new script introduces changed or removed fields, the version comparison w
 
 MIT License – see `LICENSE` file.  
 © 2025-2026 Andrew Kingdom, All rights reserved.
+
+---
+
+## Contribute
+
+`start‑site` is a core component of the Super‑System ecosystem but is designed to be **completely standalone**. Contributions that improve stability, add platform support, or extend the extension system are welcome. Please ensure changes keep the script single‑file and immutable‑by‑design.
