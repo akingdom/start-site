@@ -1235,12 +1235,12 @@ if __name__ == "__main__":
 
     # 5. Apply YAML overrides from site_config.yaml (if site_config.py exists)
     yaml_loaded = False
+    site_config_module = None
     try:
-        import site_config
-        if hasattr(site_config, 'server_init'):
-            yaml_overrides = site_config.server_init(svr_core)
-        if hasattr(site_config, 'load_config'):
-            yaml_overrides = site_config.load_config()
+        import site_config as sc
+        site_config_module = sc
+        if hasattr(sc, 'load_config'):
+            yaml_overrides = sc.load_config()
             if yaml_overrides:
                 # Check version parity
                 yaml_version = yaml_overrides.get('VERSION')
@@ -1252,8 +1252,10 @@ if __name__ == "__main__":
                 yaml_loaded = True
     except ImportError:
         logging.info("site_config.py not found; no YAML overrides.")
+        site_config_module = None
     except Exception as e:
         logging.warning("⚠️ Error loading site_config: %s", e)
+        site_config_module = None
     # If no YAML config was loaded, suggest creating one
     if not yaml_loaded and not Path("site_config.yaml").exists():
         pt_print("\n💡 No site_config.yaml found. To customise settings, create one with:")
@@ -1321,6 +1323,13 @@ if __name__ == "__main__":
     
     svr_core.register_command("help", _help_cmd, "Show this help")
     svr_core.register_command("quit", _quit_cmd, "Shut down the server")
+
+    # Register config commands from site_config module
+    if site_config_module is not None and hasattr(site_config_module, 'register_commands'):
+        try:
+            site_config_module.register_commands(svr_core, merged_dict)
+        except Exception as e:
+            logging.warning("⚠️ Error registering site_config commands: %s", e)
 
     init_server(svr_core)
 

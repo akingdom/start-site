@@ -214,36 +214,52 @@ def write_yaml(path: Path, merged_dict: Dict[str, Any], preserve_comments: bool 
         dump_file(merged_dict, path)
 
 # called by start_site_server
-def server_init(svr_core):
+def load_config(path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load site_config.yaml if it exists, else return empty dict.
+    This function is used by start_site_server.py at runtime.
+    """
+    if path is None:
+        path = "site_config.yaml"
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        return load_file(p)
+    except Exception as e:
+        print(f"Warning: Failed to load {p}: {e}", file=sys.stderr)
+        return {}
+
+# called by start_site_server
+def register_commands(svr_core, merged_config: Dict[str, Any]):
     """Register interactive commands for configuration."""
     def config_cmd(args):
-        """Display merged configuration."""
-        merged = svr_core.merged_config if hasattr(svr_core, 'merged_config') else {}
-        if merged:
-            print("Merged configuration:")
-            for k, v in merged.items():
-                if k.endswith("_note"):
-                    continue
-                print(f"  {k}: {v}")
-        else:
+        if not merged_config:
             print("No merged configuration available.")
-    import start_site_server.
-    svr_core.register_command("config", config_cmd, "Show merged configuration")
+            return
+        print("Merged configuration:")
+        for k, v in merged_config.items():
+            if k.endswith("_note"):
+                continue
+            if isinstance(v, (dict, list)):
+                print(f"  {k}: {type(v).__name__} (length {len(v)})")
+            else:
+                print(f"  {k}: {v}")
 
     def dump_cmd(args):
-        """Write current config to a file."""
         if not args:
             print("Usage: dump <filename>")
             return
         filename = args[0]
-        merged = svr_core.merged_config if hasattr(svr_core, 'merged_config') else {}
         try:
             import json
             with open(filename, 'w') as f:
-                json.dump(merged, f, indent=2, default=str)
+                json.dump(merged_config, f, indent=2, default=str)
             print(f"✅ Config dumped to {filename}")
         except Exception as e:
             print(f"Error dumping config: {e}")
+
+    svr_core.register_command("config", config_cmd, "Show merged configuration")
     svr_core.register_command("dump", dump_cmd, "Dump config to <filename>")
     
 def main():
@@ -272,23 +288,6 @@ def main():
     else:  # create
         write_yaml(output_path, merged, preserve_comments=False)
         print(f"Created {output_path} with default configuration.")
-
-# ---------- Runtime load function ----------
-def load_config(path: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Load site_config.yaml if it exists, else return empty dict.
-    This function is used by start_site_server.py at runtime.
-    """
-    if path is None:
-        path = "site_config.yaml"
-    p = Path(path)
-    if not p.exists():
-        return {}
-    try:
-        return load_file(p)
-    except Exception as e:
-        print(f"Warning: Failed to load {p}: {e}", file=sys.stderr)
-        return {}
 
 if __name__ == "__main__":
     main()
