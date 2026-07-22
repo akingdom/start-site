@@ -1109,7 +1109,6 @@ async def run_servers(manager_config=None):
             for cmd_line in svr_core.initial_commands:
                 if not cmd_line.strip():
                     continue
-                print(f" {cmd_line}")
                 parts = cmd_line.strip().split()
                 cmd = parts[0].lower()
                 entry = svr_core.get_command(cmd)
@@ -1261,7 +1260,6 @@ if __name__ == "__main__":
         site_config_module = sc
         if hasattr(sc, 'load_config'):
             yaml_overrides = sc.load_config()
-            print(f"+++ {yaml_overrides}")
             if yaml_overrides:
                 # Check version parity
                 yaml_version = yaml_overrides.get('VERSION')
@@ -1322,7 +1320,6 @@ if __name__ == "__main__":
                 del merged_config[k]
 
     final_server_config = SimpleNamespace(**merged_config)
-    print(f" <<< {final_server_config}")
 
     # 8. Handover to global svr_core and init server
     svr_core = ServerCore(final_server_config)
