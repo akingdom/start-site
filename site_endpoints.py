@@ -28,6 +28,9 @@ def init(app, svr_core):
     global _svr_core_ref
     _svr_core_ref = svr_core
 
+    # Forced override: open the default page on startup
+    svr_core.config.AUTO_OPEN_DEFAULT = True
+
     # Load numpy before defining the endpoint
     svr_core.load_endpoint_modules(REQUIRED_ENDPOINT_MODULES)
 
